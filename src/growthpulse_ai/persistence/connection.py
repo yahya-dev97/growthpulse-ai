@@ -9,8 +9,11 @@ Each side has its own setting and its own database role:
 A connection that logs in as any other role, including ``postgres``, is refused, so an
 owner credential pasted into the wrong setting fails instead of quietly working.
 
-TLS is required. Connection strings stay inside ``SecretStr`` and are never logged or put
-into error messages.
+TLS is required, and so is SCRAM-SHA-256 authentication: libpq refuses a server or pooler
+that asks for the password in clear text or MD5, or that skips authentication. TLS with
+``sslmode=require`` does not verify the server certificate; use ``verify-full`` with the
+provider's CA certificate for that. Connection strings stay inside ``SecretStr`` and are
+never logged or put into error messages.
 """
 
 from typing import Any
@@ -25,11 +28,18 @@ from growthpulse_ai.persistence.errors import DatabaseConfigurationError, Databa
 BACKEND_ROLE = "growthpulse_writer"
 DASHBOARD_ROLE = "growthpulse_dashboard"
 SECURE_SSL_MODES = frozenset({"require", "verify-ca", "verify-full"})
+REQUIRED_AUTH = "scram-sha-256"
+# require_auth arrived in libpq 16. Older versions reject the option outright.
+MIN_LIBPQ_VERSION = 160000
 CONNECT_TIMEOUT_SECONDS = 10
 
 
 def secure_conninfo(url: SecretStr | None, setting: str) -> str:
-    """Return the connection string with TLS enforced. Defaults to sslmode=require."""
+    """Return the connection string with TLS and SCRAM-SHA-256 enforced.
+
+    sslmode defaults to require and require_auth to scram-sha-256. A URL that asks for a
+    weaker TLS mode or any other authentication method is refused.
+    """
     if url is None:
         raise DatabaseConfigurationError(f"{setting} is not set")
     try:
@@ -42,6 +52,12 @@ def secure_conninfo(url: SecretStr | None, setting: str) -> str:
     if sslmode not in SECURE_SSL_MODES:
         raise DatabaseConfigurationError(
             f"{setting} must use sslmode=require, verify-ca, or verify-full"
+        )
+    if params.setdefault("require_auth", REQUIRED_AUTH) != REQUIRED_AUTH:
+        raise DatabaseConfigurationError(f"{setting} must use require_auth={REQUIRED_AUTH}")
+    if psycopg.pq.version() < MIN_LIBPQ_VERSION:
+        raise DatabaseConfigurationError(
+            "SCRAM-SHA-256 enforcement needs libpq 16 or newer; install psycopg[binary]"
         )
     return pg_conninfo.make_conninfo("", **params)
 

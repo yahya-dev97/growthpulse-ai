@@ -1,11 +1,13 @@
 import psycopg
 import pytest
+from psycopg import conninfo as pg_conninfo
 from pydantic import SecretStr
 
 from fake_db import FakeDatabase
 from growthpulse_ai.config import Settings
 from growthpulse_ai.persistence import connection as connection_module
 from growthpulse_ai.persistence.connection import (
+    MIN_LIBPQ_VERSION,
     connect_backend,
     connect_dashboard,
     open_connection,
@@ -39,6 +41,41 @@ def test_insecure_ssl_modes_are_refused(mode: str):
     with pytest.raises(DatabaseConfigurationError, match="sslmode") as caught:
         secure_conninfo(url(sslmode=mode), "DATABASE_URL")
     assert SECRET not in str(caught.value)
+
+
+# Authentication
+
+
+def test_scram_is_required_when_the_url_does_not_say():
+    params = pg_conninfo.conninfo_to_dict(secure_conninfo(url(), "DATABASE_URL"))
+    assert params["require_auth"] == "scram-sha-256"
+
+
+def test_explicit_scram_is_kept():
+    params = pg_conninfo.conninfo_to_dict(
+        secure_conninfo(url(require_auth="scram-sha-256"), "DATABASE_URL")
+    )
+    assert params["require_auth"] == "scram-sha-256"
+
+
+@pytest.mark.parametrize(
+    "method", ["md5", "password", "none", "!scram-sha-256", "md5,scram-sha-256"]
+)
+def test_other_authentication_methods_are_refused(method: str):
+    with pytest.raises(DatabaseConfigurationError, match="require_auth") as caught:
+        secure_conninfo(url(require_auth=method), "DATABASE_URL")
+    assert SECRET not in str(caught.value)
+
+
+def test_old_libpq_without_require_auth_is_refused(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(psycopg.pq, "version", lambda: 150008)
+    with pytest.raises(DatabaseConfigurationError, match="libpq 16") as caught:
+        secure_conninfo(url(), "DATABASE_URL")
+    assert SECRET not in str(caught.value)
+
+
+def test_installed_libpq_supports_require_auth():
+    assert psycopg.pq.version() >= MIN_LIBPQ_VERSION
 
 
 def test_missing_url_names_the_setting():
@@ -98,7 +135,8 @@ def test_connection_failure_does_not_leak_the_driver_message(monkeypatch: pytest
 def test_backend_uses_database_url_and_writer_role(server: dict):
     settings = Settings(_env_file=None, database_url=URL)
     connect_backend(settings)
-    assert "sslmode=require" in server["conninfo"]
+    params = pg_conninfo.conninfo_to_dict(server["conninfo"])
+    assert (params["sslmode"], params["require_auth"]) == ("require", "scram-sha-256")
     assert server["kwargs"]["application_name"] == "growthpulse-pipeline"
     assert server["database"].matching("default_transaction_read_only") == []
 
@@ -108,7 +146,9 @@ def test_dashboard_uses_its_own_url_role_and_read_only_session(server: dict):
     dashboard_url = URL.replace("growthpulse_writer", "growthpulse_dashboard")
     settings = Settings(_env_file=None, database_url=URL, dashboard_database_url=dashboard_url)
     connect_dashboard(settings)
-    assert "growthpulse_dashboard" in server["conninfo"]
+    params = pg_conninfo.conninfo_to_dict(server["conninfo"])
+    assert params["user"] == "growthpulse_dashboard.ref"
+    assert (params["sslmode"], params["require_auth"]) == ("require", "scram-sha-256")
     assert server["database"].matching("set default_transaction_read_only = on")
 
 

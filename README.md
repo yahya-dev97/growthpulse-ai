@@ -361,7 +361,7 @@ This writes [docs/samples/synthetic_analytics_report.json](docs/samples/syntheti
 
 ## Persistence
 
-Results are stored in Supabase PostgreSQL through the `persistence` package, which is the only code that runs SQL. The schema is defined by the migrations in [supabase/migrations](supabase/migrations). They have not yet been applied to the hosted project.
+Results are stored in Supabase PostgreSQL through the `persistence` package, which is the only code that runs SQL. The schema is defined by the migrations in [supabase/migrations](supabase/migrations), which are applied to the hosted project. Synthetic pipeline runs persist there idempotently. [MILESTONE_4_REPORT.md](MILESTONE_4_REPORT.md) has the verified results.
 
 - **Private schemas.** Tables live in `growthpulse` and dashboard views in `growthpulse_read`. Neither is exposed through the Supabase Data API, and the Supabase API roles (`anon`, `authenticated`, `service_role`) have no access to either.
 - **Two roles.** The pipeline logs in as `growthpulse_writer`, which can insert and update named columns but cannot delete, truncate, or change the schema. The dashboard logs in as `growthpulse_dashboard`, which can only `SELECT` from the read views. The application refuses a connection that logs in as any other role, including `postgres`.
@@ -394,7 +394,7 @@ Integration tests apply the migrations to a throwaway PostgreSQL server and are 
 | 1 | Project foundation: tooling, configuration, tests | Complete |
 | 2 | Normalized data schema and synthetic data connector | Complete |
 | 3 | KPI calculation and anomaly detection | Complete |
-| 4 | Supabase schema and persistence layer | In review: migrations written, not applied |
+| 4 | Supabase schema and persistence layer | Complete: migrations applied, synthetic runs persisted |
 | 5 | AI insights and experiment recommendations | Planned |
 | 6 | Streamlit dashboard | Planned |
 | 7 | Scheduled pipeline on GitHub Actions | Planned |

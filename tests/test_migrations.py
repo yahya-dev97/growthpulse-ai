@@ -310,15 +310,36 @@ def test_object_references_are_schema_qualified():
 
 def test_post_migration_checks_are_read_only():
     path = PROJECT_ROOT / "supabase" / "verification" / "post_migration_checks.sql"
-    statements = [s.strip() for s in strip_comments(path.read_text()).split(";") if s.strip()]
-    assert len(statements) == 11
-    for statement in statements:
-        assert statement.lower().startswith("select"), statement[:40]
-        # Privilege names such as 'CREATE' appear only inside string literals.
-        code = re.sub(r"'[^']*'", "''", statement.lower())
+    # Privilege names such as 'CREATE' and separators such as '; ' appear only inside
+    # string literals, so literals are blanked before splitting and checking.
+    code = re.sub(r"'[^']*'", "''", strip_comments(path.read_text()).lower())
+    statements = [" ".join(s.split()) for s in code.split(";") if s.strip()]
+    assert statements[0] == "begin transaction read only"
+    assert statements[-1] == "rollback"
+    assert len(statements) == 21
+    for statement in statements[1:-1]:
+        assert statement.startswith(("select", "with")), statement[:40]
         assert not re.search(
-            r"\b(insert|update|delete|alter|create|drop|grant|revoke|truncate|set|do)\b", code
-        ), statement[:40]
+            r"\b(insert|update|delete|merge|alter|create|drop|grant|revoke|truncate|copy|"
+            r"set|reset|do|call|execute|lock|vacuum|analyze|refresh|notify|listen)\b",
+            statement,
+        ), statement[:60]
+        # Functions with side effects, or that read files, settings or secrets.
+        assert not re.search(
+            r"\b(set_config|pg_read_file|pg_ls_dir|lo_\w+|dblink\w*|pg_terminate_backend|"
+            r"pg_cancel_backend|nextval|setval|current_setting|pg_reload_conf)\s*\(",
+            statement,
+        ), statement[:60]
+    # Password hashes and full setting values are never selected.
+    assert "rolpassword" not in code and "pg_authid" not in code
+    assert "setconfig" not in code.replace("unnest(d.setconfig)", "")
+
+
+def test_post_migration_checks_share_one_result_shape():
+    path = PROJECT_ROOT / "supabase" / "verification" / "post_migration_checks.sql"
+    text = strip_comments(path.read_text())
+    checks = re.findall(r"select '(\d\d) [a-z ]+' as check_name", text)
+    assert checks == [f"{n:02d}" for n in range(1, 20)]
 
 
 def test_supabase_cli_files_hold_no_secrets():

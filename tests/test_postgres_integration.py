@@ -7,7 +7,10 @@ container. Supabase hosts are refused outright.
 """
 
 import os
+import re
+import stat
 from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import date
 
 import psycopg
@@ -15,17 +18,20 @@ import pytest
 from psycopg import conninfo as pg_conninfo
 from psycopg import errors as pg_errors
 from psycopg import sql
+from pydantic import SecretStr
 
 from factories import make_row
 from growthpulse_ai.config import PROJECT_ROOT
 from growthpulse_ai.connectors.synthetic import SyntheticConnector
 from growthpulse_ai.connectors.synthetic_data import generate_synthetic_rows
-from growthpulse_ai.persistence import read, store
+from growthpulse_ai.persistence import connection_check, provision_roles, read, store
 from growthpulse_ai.persistence.connection import (
     BACKEND_ROLE,
     DASHBOARD_ROLE,
     open_connection,
+    secure_conninfo,
 )
+from growthpulse_ai.persistence.errors import DatabaseUnavailableError
 from growthpulse_ai.persistence.store import ExperimentProposal, record_experiment_proposal
 from growthpulse_ai.pipeline.persisted_run import PipelineRunError, run_and_persist
 from growthpulse_ai.schema import DataSource
@@ -612,30 +618,381 @@ def test_owner_can_enable_login_but_not_grant_elevated_attributes():
                 connection.execute(f"alter role growthpulse_dashboard {attribute}")
 
 
-def test_post_migration_checks_run_read_only_and_pass_here():
-    path = PROJECT_ROOT / "supabase" / "verification" / "post_migration_checks.sql"
-    statements = [s for s in path.read_text().split(";\n") if "select" in s]
-    results = {}
-    with admin() as connection, connection.transaction():
-        connection.execute("set transaction read only")
-        for index, statement in enumerate(statements, start=1):
-            # Supabase-only catalogs (history table, authenticator role) are skipped here.
-            if "supabase_migrations" in statement:
+CHECKS = PROJECT_ROOT / "supabase" / "verification" / "post_migration_checks.sql"
+
+
+def run_verification() -> list[tuple]:
+    """Run the verification script statement by statement, as psql would."""
+    with admin() as connection:
+        # Test database only: stand in for the Supabase CLI's migration history table.
+        connection.execute("create schema if not exists supabase_migrations")
+        connection.execute(
+            "create table if not exists supabase_migrations.schema_migrations "
+            "(version text primary key, statements text[], name text)"
+        )
+        for path in MIGRATIONS:
+            version, name = path.stem.split("_", 1)
+            connection.execute(
+                "insert into supabase_migrations.schema_migrations (version, name) "
+                "values (%s, %s) on conflict do nothing",
+                (version, name),
+            )
+    rows: list[tuple] = []
+    with admin() as connection:
+        for statement in CHECKS.read_text().split(";\n"):
+            if not statement.strip():
                 continue
-            results[index] = connection.execute(statement).fetchall()
-    assert results[2] == [(OWNER,)]
-    assert len(results[3]) == 7 and all(enabled for _, enabled in results[3])
-    assert all(not any(flags[:-1]) for _, *flags in results[4])
-    # The creator holds ADMIN on each app role; no app role is a member of anything.
-    assert {member for _, member, *_ in results[5]} == {OWNER}
-    assert len(results[6]) == 6 and not any(usage for *_, usage in results[6])
-    assert {(role, schema) for role, schema, _ in results[8]} >= {
-        (BACKEND_ROLE, "growthpulse"),
-        (DASHBOARD_ROLE, "growthpulse_read"),
-    }
-    assert (BACKEND_ROLE, "growthpulse_read") not in {(r, s) for r, s, _ in results[8]}
-    assert (DASHBOARD_ROLE, "growthpulse") not in {(r, s) for r, s, _ in results[8]}
-    assert results[9] == []
+            cursor = connection.execute(statement)
+            if cursor.description:
+                rows.extend(cursor.fetchall())
+        assert connection.info.transaction_status.name == "IDLE"  # ended with ROLLBACK
+    return rows
+
+
+def test_post_migration_checks_pass_on_the_tested_schema():
+    rows = run_verification()
+    assert len({row[0] for row in rows}) >= 17
+    for check, item, expected, actual, ok in rows:
+        if check in {"02 schemas", "04 ownership"}:
+            # The test owner stands in for Supabase's postgres.
+            assert OWNER in actual, (check, item)
+        elif check == "08 roles" and item in {BACKEND_ROLE, DASHBOARD_ROLE}:
+            # Login is enabled here so the tests can connect; on Supabase it is still off.
+            assert actual == expected.replace("login=f", "login=t"), item
+        else:
+            assert ok is not False, (check, item, expected, actual)
+
+
+def test_post_migration_checks_run_in_a_read_only_transaction():
+    statements = [s for s in CHECKS.read_text().split(";\n") if s.strip()]
+    assert statements[0].strip().endswith("begin transaction read only")
+    assert statements[-1].strip() == "rollback"
+    with admin() as connection:
+        connection.execute(statements[0])
+        with pytest.raises(pg_errors.ReadOnlySqlTransaction):
+            connection.execute("create table public.should_not_exist (id int)")
+
+
+def test_post_migration_checks_detect_drift():
+    with admin() as connection:
+        connection.execute("grant select on growthpulse.findings to anon")
+        connection.execute("create table growthpulse.extra_table (id int)")
+    try:
+        failing = {(check, item) for check, item, *_, ok in run_verification() if ok is False}
+    finally:
+        with admin() as connection:
+            connection.execute("drop table growthpulse.extra_table")
+            connection.execute("revoke select on growthpulse.findings from anon")
+    assert ("09 grants", "grants that were not expected") in failing
+    assert ("03 objects", "unexpected objects") in failing
+    assert ("03 objects", "tables") in failing
+
+
+# Connection check and role provisioning
+
+
+def test_tls_check_runs_on_a_real_connection():
+    # Uses the real psycopg connection object, so an API the driver lacks fails here.
+    with writer() as connection:
+        results = dict(connection_check.check_tls(connection))
+    assert results["TLS in use"] is False  # the throwaway server has no TLS
+    assert results["client requires TLS 1.2 or newer"] is True
+
+
+def test_connection_check_passes_for_both_roles():
+    with writer() as connection:
+        backend = connection_check.check_backend(connection)
+    with as_role(DASHBOARD_ROLE) as connection:
+        dashboard = connection_check.check_dashboard(connection)
+    failures = [name for name, ok in [*backend, *dashboard] if not ok]
+    assert failures == []
+    assert len(backend) == 6 + len(connection_check.TABLES) + 1
+    assert len(dashboard) == 4 + len(connection_check.VIEWS) + 1
+
+
+def test_connection_check_detects_privilege_drift():
+    with admin() as connection:
+        connection.execute(
+            "grant delete on growthpulse.ad_performance_records to growthpulse_writer"
+        )
+    try:
+        with writer() as connection:
+            results = dict(connection_check.check_backend(connection))
+    finally:
+        with admin() as connection:
+            connection.execute(
+                "revoke delete on growthpulse.ad_performance_records from growthpulse_writer"
+            )
+    assert results["writer: cannot delete records"] is False
+
+
+def test_connection_check_leaves_nothing_behind():
+    before = scalar("select count(*) from growthpulse.pipeline_runs")
+    with writer() as connection:
+        connection_check.check_backend(connection)
+        assert connection.info.transaction_status.name == "IDLE"
+    assert scalar("select count(*) from growthpulse.pipeline_runs") == before
+
+
+def stored_verifier(role: str) -> str:
+    return scalar("select rolpassword from pg_authid where rolname = %s", (role,))
+
+
+PROVISION = {
+    "project_ref": "abcdefghijklmnopqrst",
+    "pooler_host": "aws-1-ap-southeast-2.pooler.supabase.com",
+}
+
+
+class StatementSpy:
+    """Wraps a connection and records the exact SQL text sent to the server."""
+
+    def __init__(self, connection: psycopg.Connection) -> None:
+        self.connection = connection
+        self.pgconn = connection.pgconn
+        self.sent: list[str] = []
+
+    def transaction(self):
+        return self.connection.transaction()
+
+    def cursor(self):
+        spy = self
+
+        class Cursor:
+            def __init__(self) -> None:
+                self.inner = spy.connection.cursor()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.inner.close()
+
+            def execute(self, query, params=None):
+                text = query if isinstance(query, str) else query.as_string(spy.connection)
+                spy.sent.append(text)
+                return self.inner.execute(query, params)
+
+        return Cursor()
+
+
+def test_provisioning_sets_scram_hashes_and_writes_a_private_env(tmp_path):
+    env = tmp_path / ".env"
+    with owner() as connection:
+        spy = StatementSpy(connection)
+        roles = provision_roles.provision(
+            spy, env_path=env, rotate=True, owner_role=OWNER, **PROVISION
+        )
+    alters = [text for text in spy.sent if text.startswith("alter role")]
+    assert len(alters) == 2
+    assert all("with login password 'SCRAM-SHA-256$" in text for text in alters)
+    # Every other statement only reads, and the two writes touch only the two app roles.
+    assert [text.split(" with ")[0] for text in alters] == [
+        f'alter role "{BACKEND_ROLE}"',
+        f'alter role "{DASHBOARD_ROLE}"',
+    ]
+    reads = [text for text in spy.sent if text not in alters]
+    assert reads
+    assert all(re.match(r"\s*(select|show)\b", text) for text in reads)
+    assert roles == [BACKEND_ROLE, DASHBOARD_ROLE]
+    assert stat.S_IMODE(env.stat().st_mode) == 0o600
+    assert not (tmp_path / ".env.provisioning").exists()
+    text = env.read_text()
+    passwords = {}
+    for role, key in provision_roles.ROLES.items():
+        match = re.search(
+            rf"^{key}=postgresql://{role}\.abcdefghijklmnopqrst:([A-Za-z0-9]{{40}})"
+            r"@aws-1-ap-southeast-2\.pooler\.supabase\.com:5432/postgres\?sslmode=require$",
+            text,
+            re.MULTILINE,
+        )
+        assert match, key
+        passwords[role] = match.group(1)
+        verifier = stored_verifier(role)
+        assert verifier.startswith("SCRAM-SHA-256$")
+        assert passwords[role] not in verifier
+        # The plaintext was never sent: only the hash computed on this machine was.
+        assert not any(passwords[role] in text for text in spy.sent)
+        assert any(verifier in text for text in alters)
+    assert passwords[BACKEND_ROLE] != passwords[DASHBOARD_ROLE]
+    assert "APP_ENV=local" in text  # the rest of .env.example is kept
+    assert scalar(
+        "select bool_and(rolcanlogin) from pg_roles where rolname in (%s, %s)",
+        (BACKEND_ROLE, DASHBOARD_ROLE),
+    )
+
+
+def test_provisioning_refuses_roles_that_can_already_log_in(tmp_path):
+    before = stored_verifier(BACKEND_ROLE)
+    with owner() as connection, pytest.raises(provision_roles.ProvisioningError, match="rotate"):
+        provision_roles.provision(
+            connection, env_path=tmp_path / ".env", owner_role=OWNER, **PROVISION
+        )
+    assert stored_verifier(BACKEND_ROLE) == before
+    assert not (tmp_path / ".env").exists()
+
+
+def test_provisioning_failure_changes_no_role_and_leaves_no_file(tmp_path, monkeypatch):
+    before = {role: stored_verifier(role) for role in provision_roles.ROLES}
+
+    def broken_write(path, text):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(provision_roles, "write_private_file", broken_write)
+    with owner() as connection, pytest.raises(OSError):
+        provision_roles.provision(
+            connection, env_path=tmp_path / ".env", rotate=True, owner_role=OWNER, **PROVISION
+        )
+    assert {role: stored_verifier(role) for role in provision_roles.ROLES} == before
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("write_completes", [False, True])
+def test_failure_after_the_file_is_written_removes_it(tmp_path, monkeypatch, write_completes):
+    """A write that fails partway, or fully, before COMMIT: roll back and delete the file."""
+    before = {role: stored_verifier(role) for role in provision_roles.ROLES}
+    real_write = provision_roles.write_private_file
+
+    def write_then_fail(path, text):
+        real_write(path, text if write_completes else text[:10])
+        raise OSError("fsync failed")
+
+    monkeypatch.setattr(provision_roles, "write_private_file", write_then_fail)
+    with owner() as connection, pytest.raises(OSError, match="fsync"):
+        provision_roles.provision(
+            connection, env_path=tmp_path / ".env", rotate=True, owner_role=OWNER, **PROVISION
+        )
+    assert {role: stored_verifier(role) for role in provision_roles.ROLES} == before
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_provisioning_refuses_a_server_without_scram(tmp_path):
+    before = stored_verifier(BACKEND_ROLE)
+    with owner() as connection:
+        connection.execute("set password_encryption = 'md5'")
+        with pytest.raises(provision_roles.ProvisioningError, match="scram-sha-256"):
+            provision_roles.provision(
+                connection, env_path=tmp_path / ".env", rotate=True, owner_role=OWNER, **PROVISION
+            )
+    assert stored_verifier(BACKEND_ROLE) == before
+
+
+def test_provisioning_refuses_a_role_with_elevated_attributes(tmp_path):
+    with admin() as connection:
+        connection.execute("alter role growthpulse_dashboard createdb")
+    try:
+        with (
+            owner() as connection,
+            pytest.raises(provision_roles.ProvisioningError, match="elevated"),
+        ):
+            provision_roles.provision(
+                connection, env_path=tmp_path / ".env", rotate=True, owner_role=OWNER, **PROVISION
+            )
+    finally:
+        with admin() as connection:
+            connection.execute("alter role growthpulse_dashboard nocreatedb")
+
+
+class FailingCommit(StatementSpy):
+    """Rolls the transaction back and raises, as a failed COMMIT would."""
+
+    @contextmanager
+    def transaction(self):
+        with self.connection.transaction():
+            yield
+            raise psycopg.OperationalError("commit failed")
+
+
+def test_failed_commit_keeps_the_only_copy_and_says_the_outcome_is_unknown(tmp_path):
+    before = {role: stored_verifier(role) for role in provision_roles.ROLES}
+    with (
+        owner() as connection,
+        pytest.raises(
+            provision_roles.ProvisioningError, match="commit outcome is unknown"
+        ) as caught,
+    ):
+        provision_roles.provision(
+            FailingCommit(connection),
+            env_path=tmp_path / ".env",
+            rotate=True,
+            owner_role=OWNER,
+            **PROVISION,
+        )
+    # A failed COMMIT may or may not have applied, so the new values are not thrown away.
+    staged = tmp_path / ".env.provisioning"
+    assert [path.name for path in tmp_path.iterdir()] == [staged.name]
+    assert stat.S_IMODE(staged.stat().st_mode) == 0o600
+    assert not re.search(r"[A-Za-z0-9]{40}", str(caught.value))
+    # Here the commit really rolled back, which the read-only verification would show.
+    assert {role: stored_verifier(role) for role in provision_roles.ROLES} == before
+
+
+def test_provisioning_refuses_app_roles_with_memberships(tmp_path):
+    with admin() as connection:
+        connection.execute("grant growthpulse_dashboard to growthpulse_writer")
+    try:
+        with (
+            owner() as connection,
+            pytest.raises(provision_roles.ProvisioningError, match="member of another role"),
+        ):
+            provision_roles.provision(
+                connection, env_path=tmp_path / ".env", rotate=True, owner_role=OWNER, **PROVISION
+            )
+    finally:
+        with admin() as connection:
+            connection.execute("revoke growthpulse_dashboard from growthpulse_writer")
+
+
+def test_bundled_libpq_refuses_servers_that_skip_scram():
+    # The throwaway server uses trust authentication, so it never asks for SCRAM. With
+    # require_auth, libpq must refuse it rather than continue.
+    conninfo = pg_conninfo.make_conninfo(TEST_URL, require_auth="scram-sha-256")
+    with pytest.raises(psycopg.OperationalError, match="require_auth|authentication"):
+        psycopg.connect(conninfo).close()
+
+
+def test_application_conninfo_is_refused_by_a_server_that_skips_scram():
+    # Build the URL exactly as the app does, then drop only TLS, because the throwaway
+    # server has none. The require_auth that secure_conninfo added must stop the login.
+    params = pg_conninfo.conninfo_to_dict(TEST_URL)
+    params["user"] = BACKEND_ROLE
+    params.pop("password", None)
+    params.pop("sslmode", None)
+    app_conninfo = secure_conninfo(
+        SecretStr(pg_conninfo.make_conninfo("", **params)), "DATABASE_URL"
+    )
+    without_tls = pg_conninfo.make_conninfo(app_conninfo, sslmode="disable")
+    assert pg_conninfo.conninfo_to_dict(without_tls)["require_auth"] == "scram-sha-256"
+    with pytest.raises(DatabaseUnavailableError):
+        open_connection(
+            without_tls, expected_role=BACKEND_ROLE, application_name="growthpulse-tests"
+        )
+
+
+def test_connection_check_detects_dashboard_reaching_base_tables():
+    with admin() as connection:
+        connection.execute("grant usage on schema growthpulse to growthpulse_dashboard")
+        connection.execute(
+            "grant select on growthpulse.quarantined_records to growthpulse_dashboard"
+        )
+    try:
+        with as_role(DASHBOARD_ROLE) as connection:
+            results = dict(connection_check.check_dashboard(connection))
+    finally:
+        with admin() as connection:
+            connection.execute(
+                "revoke select on growthpulse.quarantined_records from growthpulse_dashboard"
+            )
+            connection.execute("revoke usage on schema growthpulse from growthpulse_dashboard")
+    assert results["dashboard: refused when reading a base table"] is False
+    assert results["dashboard: cannot use growthpulse"] is False
+
+
+def test_provisioning_needs_the_owner(tmp_path):
+    with writer() as connection, pytest.raises(provision_roles.ProvisioningError, match="owner"):
+        provision_roles.provision(
+            connection, env_path=tmp_path / ".env", rotate=True, owner_role=OWNER, **PROVISION
+        )
 
 
 # Rollback. Kept last because it drops and recreates everything.
