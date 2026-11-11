@@ -359,6 +359,24 @@ This writes [docs/samples/synthetic_analytics_report.json](docs/samples/syntheti
 }
 ```
 
+## Persistence
+
+Results are stored in Supabase PostgreSQL through the `persistence` package, which is the only code that runs SQL. The schema is defined by the migrations in [supabase/migrations](supabase/migrations). They have not yet been applied to the hosted project.
+
+- **Private schemas.** Tables live in `growthpulse` and dashboard views in `growthpulse_read`. Neither is exposed through the Supabase Data API, and the Supabase API roles (`anon`, `authenticated`, `service_role`) have no access to either.
+- **Two roles.** The pipeline logs in as `growthpulse_writer`, which can insert and update named columns but cannot delete, truncate, or change the schema. The dashboard logs in as `growthpulse_dashboard`, which can only `SELECT` from the read views. The application refuses a connection that logs in as any other role, including `postgres`.
+- **Idempotent writes.** Records are upserted by `record_id` and change only when their values differ. A report's ID is a hash of its content, so an identical report is stored once. Reports, experiment proposals and status events are append-only, and a database trigger rejects any update.
+- **Failure records.** A run row is committed before any data is read. All data from a run is written in one transaction, so a failure leaves nothing half-written, and the run is then marked failed with a fixed error code, never an error message.
+- **Experiments are advisory.** The pipeline can propose an experiment but cannot approve, start or complete one. The database enforces this and the allowed status transitions.
+
+Run a persisted pipeline (requires `DATABASE_URL`, see [.env.example](.env.example)):
+
+```bash
+uv run python -m growthpulse_ai.pipeline.persisted_run
+```
+
+Integration tests apply the migrations to a throwaway PostgreSQL server and are skipped unless `GROWTHPULSE_TEST_DATABASE_URL` is set. They drop and recreate the GrowthPulse schemas and refuse Supabase hosts. CI runs them against a PostgreSQL 17 container.
+
 ## Known limitations
 
 - Rules and the noise guard involve no statistical test, so ordinary sampling variation can still trigger them. Across 200 synthetic seeds, 6.9% to 7.2% of campaigns with no planted anomaly received at least one active adverse finding. These rates describe this generator and do not predict real-world accuracy.
@@ -376,7 +394,7 @@ This writes [docs/samples/synthetic_analytics_report.json](docs/samples/syntheti
 | 1 | Project foundation: tooling, configuration, tests | Complete |
 | 2 | Normalized data schema and synthetic data connector | Complete |
 | 3 | KPI calculation and anomaly detection | Complete |
-| 4 | Supabase schema and persistence layer | Planned |
+| 4 | Supabase schema and persistence layer | In review: migrations written, not applied |
 | 5 | AI insights and experiment recommendations | Planned |
 | 6 | Streamlit dashboard | Planned |
 | 7 | Scheduled pipeline on GitHub Actions | Planned |
