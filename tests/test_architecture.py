@@ -9,7 +9,12 @@ import growthpulse_ai
 ROOT_PACKAGE = "growthpulse_ai"
 PACKAGE_DIR = Path(growthpulse_ai.__file__).parent
 
+LAYERS = {"connectors", "analytics", "ai_analysis", "persistence", "pipeline", "dashboard"}
+
 FORBIDDEN_IMPORTS = {
+    # Shared modules sit below every layer, so any layer can depend on them.
+    "schema": LAYERS | {"data_quality"},
+    "data_quality": LAYERS,
     "connectors": {"analytics", "ai_analysis", "persistence", "pipeline", "dashboard"},
     "analytics": {"connectors", "ai_analysis", "persistence", "pipeline", "dashboard"},
     "ai_analysis": {"connectors", "persistence", "pipeline", "dashboard"},
@@ -36,7 +41,9 @@ def imported_modules(path: Path, package_dir: Path) -> Iterator[str]:
 def find_violations(package_dir: Path) -> list[str]:
     violations = []
     for layer, forbidden in FORBIDDEN_IMPORTS.items():
-        for path in (package_dir / layer).rglob("*.py"):
+        single_module = package_dir / f"{layer}.py"
+        paths = [single_module] if single_module.exists() else (package_dir / layer).rglob("*.py")
+        for path in paths:
             for module in imported_modules(path, package_dir):
                 parts = module.split(".")
                 if len(parts) > 1 and parts[0] == ROOT_PACKAGE and parts[1] in forbidden:
@@ -59,3 +66,9 @@ def test_checker_detects_absolute_and_relative_violations(tmp_path: Path):
     offending_files = {violation.split()[0] for violation in find_violations(tmp_path)}
 
     assert offending_files == {"absolute.py", "relative.py", "parent.py"}
+
+
+def test_checker_covers_shared_modules(tmp_path: Path):
+    (tmp_path / "schema.py").write_text("from growthpulse_ai.connectors import base\n")
+
+    assert find_violations(tmp_path)

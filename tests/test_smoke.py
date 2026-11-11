@@ -16,7 +16,20 @@ def test_package_exposes_version():
 
 @pytest.mark.parametrize(
     "module",
-    ["config", "connectors", "analytics", "ai_analysis", "persistence", "pipeline", "dashboard"],
+    [
+        "config",
+        "schema",
+        "data_quality",
+        "connectors",
+        "connectors.base",
+        "connectors.synthetic",
+        "connectors.synthetic_data",
+        "analytics",
+        "ai_analysis",
+        "persistence",
+        "pipeline",
+        "dashboard",
+    ],
 )
 def test_module_imports(module: str):
     importlib.import_module(f"growthpulse_ai.{module}")
