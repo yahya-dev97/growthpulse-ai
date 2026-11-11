@@ -66,8 +66,13 @@ def register_account(
     )
 
 
-def seed_synthetic_client(connection: psycopg.Connection, client) -> None:
-    """Insert a synthetic ClientContext and its accounts with their fixed IDs."""
+def seed_synthetic_client(
+    connection: psycopg.Connection, client, *, with_sync: bool = False, status: str = "active"
+) -> None:
+    """Insert a synthetic ClientContext and its accounts, as owner actions would.
+
+    ``with_sync`` also creates each account's sync settings (manual) and state.
+    """
     connection.execute(
         "insert into growthpulse.clients (client_id, workspace_id, name, data_source) "
         "values (%s, %s, %s, 'synthetic')",
@@ -77,7 +82,7 @@ def seed_synthetic_client(connection: psycopg.Connection, client) -> None:
         connection.execute(
             "insert into growthpulse.ad_accounts (ad_account_id, client_id, data_source, "
             "platform, external_account_id, currency, timezone, status) "
-            "values (%s, %s, 'synthetic', %s, %s, %s, %s, 'active')",
+            "values (%s, %s, 'synthetic', %s, %s, %s, %s, %s)",
             (
                 account.ad_account_id,
                 client.client_id,
@@ -85,8 +90,19 @@ def seed_synthetic_client(connection: psycopg.Connection, client) -> None:
                 account.external_account_id,
                 account.currency,
                 account.timezone,
+                status,
             ),
         )
+        if with_sync:
+            connection.execute(
+                "insert into growthpulse.account_sync_config (ad_account_id, frequency, "
+                "backfill_start_date) values (%s, 'manual', date '2026-10-01')",
+                (account.ad_account_id,),
+            )
+            connection.execute(
+                "insert into growthpulse.account_sync_state (ad_account_id) values (%s)",
+                (account.ad_account_id,),
+            )
 
 
 def start_client_run(connection: psycopg.Connection, run_id, client_id) -> None:

@@ -559,3 +559,26 @@ These are recorded in full in [MILESTONE_5_PHASE_B_REPORT.md](MILESTONE_5_PHASE_
     - `supabase/verification/milestone_5_checks.sql` verifies the post-Milestone 5 state.
     - `post_migration_checks.sql` remains the Milestone 4 state check.
     - A restrict-only `supabase/rollback/20261111200000_revert_milestone_5.sql` returns the database to the exact Milestone 4 schema while keeping its data. This is proven by a schema comparison against a pristine Milestone 4 database.
+
+---
+
+## 15. Clarifications from Phase C
+
+These are recorded in full in [MILESTONE_5_PHASE_C_REPORT.md](MILESTONE_5_PHASE_C_REPORT.md), section 4. Items 1 and 2 need your decision before scheduled operation. None changes an approved decision.
+
+1. **The report's data-quality section covers each account's latest sync window.** A client report includes the latest successful sync summary of each active account. If that sync was a short lookback re-fetch, the section describes those days, not the whole analysis window. Report IDs stay deterministic, but they depend on the window of the latest syncs. **Needs a decision before scheduling.**
+2. **Onboarding accounts are synced but not analysed.** Analysis reads only accounts in the `active` state. Nothing moves an account from `onboarding` to `active` automatically: the owner does it with `set_account_status`. **Needs a decision before scheduling.**
+3. **Accounts needing attention stay stopped.** A direct sync call is refused until the owner resumes the account.
+4. **`auth_failed` stops the account but doesn't flag the connection.** The account goes to `needs_attention`. Marking the connection `needs_reauth` needs the token manager, which is Milestone 6 work.
+5. **Abandoned leases don't count as failures.** When an expired lease is taken over, its run is marked `abandoned`, but the consecutive-failure count doesn't rise.
+6. **An empty window still advances the watermark.** A sync window with no data is a successful sync of zero records.
+7. **Removing the scope fallbacks is a proposal only.** It is `supabase/proposed/20261111200500_remove_scope_fallbacks.sql`, tested but outside the migrations folder. If it's adopted, `milestone_5_checks.sql` needs its expected inventory updated.
+
+**Resolutions (2026-11-12):**
+1. **Data quality** is computed from what's analysed:
+   - records and their warnings come from the stored, deduplicated records in the window;
+   - quarantined rows come from sync evidence covering the window, merged by quarantine ID, independent of order;
+   - a window that successful syncs don't fully cover is refused.
+2. **Manual activation is kept for V1.**
+3. **Watermarks advance only on responses the connector confirms complete.** An unconfirmed response fails with `incomplete_response` (retryable), empty or not.
+4. **The fallback-removal migration stays proposed and unapplied.**

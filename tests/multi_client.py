@@ -12,6 +12,7 @@ from growthpulse_ai.connectors.synthetic_data import (
     SYNTHETIC_CLIENTS,
     SyntheticClientSpec,
 )
+from growthpulse_ai.persistence.rows import quarantine_evidence
 from growthpulse_ai.schema import AdPerformanceRecord, DataSource
 
 START, END = date(2026, 10, 1), date(2026, 10, 30)
@@ -50,13 +51,33 @@ CLIENTS = tuple(client_context(spec) for spec in SYNTHETIC_CLIENTS)
 
 def sync_client(
     client: ClientContext, start: date = START, end: date = END
-) -> tuple[list[AdPerformanceRecord], dict[UUID, dict[str, Any]]]:
-    """Fetch each account separately, as independent account syncs would."""
+) -> tuple[list[AdPerformanceRecord], list[dict[str, Any]]]:
+    """Fetch each account separately, as independent account syncs would.
+
+    Returns the records and the quarantine evidence the syncs would store.
+    """
     factory = SyntheticConnectorFactory()
     records: list[AdPerformanceRecord] = []
-    summaries: dict[UUID, dict[str, Any]] = {}
+    evidence: list[dict[str, Any]] = []
     for account in client.accounts:
-        result = factory.for_account(account).fetch(start, end)
+        connector = factory.for_account(account)
+        result = connector.fetch(start, end)
         records.extend(result.records)
-        summaries[account.ad_account_id] = result.summary
-    return records, summaries
+        evidence.extend(
+            quarantine_evidence(
+                result.quarantined, data_source=account.data_source,
+                connector=connector.name, ad_account_id=account.ad_account_id,
+            )
+        )  # fmt: skip
+    return records, evidence
+
+
+def sync_summaries(
+    client: ClientContext, start: date = START, end: date = END
+) -> dict[UUID, dict[str, Any]]:
+    """Each account's own validation summary, as its sync reports it."""
+    factory = SyntheticConnectorFactory()
+    return {
+        account.ad_account_id: factory.for_account(account).fetch(start, end).summary
+        for account in client.accounts
+    }

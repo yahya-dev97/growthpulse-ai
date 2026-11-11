@@ -395,7 +395,7 @@ Integration tests apply the migrations to a throwaway PostgreSQL server and are 
 | 2 | Normalized data schema and synthetic data connector | Complete |
 | 3 | KPI calculation and anomaly detection | Complete |
 | 4 | Supabase schema and persistence layer | Complete: migrations applied, synthetic runs persisted |
-| 5 | Multi-client and multi-ad-account architecture ([design](MILESTONE_5_DESIGN.md)) | In progress: Phases A and B complete locally; not yet applied to Supabase |
+| 5 | Multi-client and multi-ad-account architecture ([design](MILESTONE_5_DESIGN.md)) | In progress: Phases A and B committed; Phase C complete locally; not yet applied to Supabase |
 | 6 | OAuth and read-only Google Ads and Meta integrations | Planned |
 | 7 | AI insights and experiment recommendations | Planned |
 | 8 | Streamlit dashboard | Planned |

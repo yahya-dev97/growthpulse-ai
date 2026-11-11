@@ -1,13 +1,20 @@
-"""Run the synthetic pipeline and save the results to Supabase PostgreSQL.
+"""Run the synthetic pipeline for one client and save the results to Supabase PostgreSQL.
 
-Usage: uv run python -m growthpulse_ai.pipeline.persisted_run [--trigger manual|scheduled]
+Usage: uv run python -m growthpulse_ai.pipeline.persisted_run
+           [--trigger manual|scheduled] [--client-id UUID]
 
 Requires DATABASE_URL for the growthpulse_writer role. Nothing runs this automatically.
 Only synthetic data is supported until live connectors exist.
 
-If anything fails after the run starts, the data transaction rolls back and the run is
-marked failed with a fixed error code on a fresh connection. Error messages, which can
-contain hosts, user names or data values, are never stored or printed.
+The command syncs each of the client's syncable accounts on its own, then analyses the
+client from what the syncs stored. The client is always named explicitly: by default the
+fictional legacy client that holds the Milestone 4 data, whose analysis reproduces
+Milestone 4's report exactly. Nothing depends on a database default.
+
+``run_and_persist`` keeps the Milestone 4 shape (fetch, report and store in one run) for
+one explicit client. Both paths store a failure as a fixed error code on a fresh
+connection; error messages, which can contain hosts, user names or data values, are
+never stored or printed.
 """
 
 import argparse
@@ -20,14 +27,15 @@ from uuid import UUID, uuid4
 
 import psycopg
 
-from growthpulse_ai.analytics.errors import AnalyticsError
+from growthpulse_ai.accounts.legacy import LEGACY_CLIENT_ID
+from growthpulse_ai.accounts.models import ClientContext
+from growthpulse_ai.accounts.scheduling import DateWindow
 from growthpulse_ai.analytics.report import build_report
 from growthpulse_ai.config import get_settings
-from growthpulse_ai.connectors.base import AdDataConnector, ConnectorError
-from growthpulse_ai.connectors.synthetic import SyntheticConnector
+from growthpulse_ai.connectors.base import AdDataConnector
+from growthpulse_ai.connectors.factory import ConnectorFactory, SyntheticConnectorFactory
 from growthpulse_ai.connectors.synthetic_data import DEFAULT_DAYS, DEFAULT_START_DATE
 from growthpulse_ai.persistence.connection import connect_backend
-from growthpulse_ai.persistence.errors import classify_database_error
 from growthpulse_ai.persistence.store import (
     CODE_VERSION_PATTERN,
     Trigger,
@@ -35,14 +43,23 @@ from growthpulse_ai.persistence.store import (
     save_run_results,
     start_run,
 )
+from growthpulse_ai.persistence.tenancy import load_client
+from growthpulse_ai.pipeline.account_sync import AccountSyncError, SyncOutcome, sync_account
+from growthpulse_ai.pipeline.client_analysis import (
+    AnalysisOutcome,
+    ClientAnalysisError,
+    run_client_analysis,
+)
+from growthpulse_ai.pipeline.failures import NoValidRecordsError, classify_error
+
+__all__ = ["NoValidRecordsError", "classify_error"]
 
 logger = logging.getLogger(__name__)
 
 Connect = Callable[[], psycopg.Connection]
-
-
-class NoValidRecordsError(Exception):
-    """Every row was quarantined, so there is nothing to analyse."""
+SYNTHETIC_WINDOW = DateWindow(
+    DEFAULT_START_DATE, DEFAULT_START_DATE + timedelta(days=DEFAULT_DAYS - 1)
+)
 
 
 class PipelineRunError(Exception):
@@ -61,20 +78,6 @@ class RunOutcome:
     run_id: UUID
     report_id: str
     counts: dict[str, int]
-
-
-def classify_error(error: BaseException) -> str:
-    """Map any exception to a fixed code that is safe to store."""
-    database_code = classify_database_error(error)
-    if database_code is not None:
-        return database_code
-    if isinstance(error, ConnectorError):
-        return "connector_unavailable"
-    if isinstance(error, NoValidRecordsError):
-        return "no_valid_records"
-    if isinstance(error, AnalyticsError):
-        return "analytics_error"
-    return "unexpected_error"
 
 
 def _record_failure(connect: Connect, run_id: UUID, code: str, counts: dict[str, int]) -> bool:
@@ -97,10 +100,16 @@ def run_and_persist(
     start_date: date,
     end_date: date,
     *,
+    client: ClientContext,
     triggered_by: Trigger,
     code_version: str | None = None,
     run_id: UUID | None = None,
 ) -> RunOutcome:
+    """Combined run for one explicit client: fetch, build the report and store it at once.
+
+    A record or finding naming an account outside the client fails the run with
+    ``account_mismatch``; nothing is re-filed under another account.
+    """
     run_id = run_id or uuid4()
     try:
         with connect() as connection:
@@ -109,6 +118,7 @@ def run_and_persist(
                 run_id,
                 data_source=connector.data_source,
                 triggered_by=triggered_by,
+                client_id=client.client_id,
                 code_version=code_version,
             )
     except Exception as error:
@@ -131,6 +141,7 @@ def run_and_persist(
             counts = save_run_results(
                 connection,
                 run_id,
+                client=client,
                 data_source=connector.data_source,
                 connector=connector.name,
                 records=result.records,
@@ -147,6 +158,50 @@ def run_and_persist(
     return RunOutcome(run_id=run_id, report_id=report["report_id"], counts=counts)
 
 
+@dataclass(frozen=True, slots=True)
+class ClientRunOutcome:
+    syncs: tuple[SyncOutcome, ...]
+    analysis: AnalysisOutcome
+
+
+def run_client(
+    client_id: UUID,
+    connect: Connect,
+    *,
+    factory: ConnectorFactory,
+    window: DateWindow | None,
+    triggered_by: Trigger,
+    code_version: str | None = None,
+) -> ClientRunOutcome:
+    """Sync each of the client's syncable accounts, then analyse the client.
+
+    Syncs are independent: a failed sync is reported and the analysis does not run, so no
+    report ever describes data an account failed to deliver.
+    """
+    with connect() as connection:
+        client = load_client(connection, client_id)
+    syncs = tuple(
+        sync_account(
+            account,
+            factory,
+            connect,
+            triggered_by=triggered_by,
+            window=window,
+            code_version=code_version,
+        )  # fmt: skip
+        for account in client.syncable_accounts
+    )
+    analysis = run_client_analysis(
+        client_id,
+        connect,
+        triggered_by=triggered_by,
+        end=window.end if window else None,
+        days=window.days if window else DEFAULT_DAYS,
+        code_version=code_version,
+    )
+    return ClientRunOutcome(syncs, analysis)
+
+
 def _code_version() -> str | None:
     sha = os.environ.get("GITHUB_SHA", "").lower()
     return sha if CODE_VERSION_PATTERN.fullmatch(sha) else None
@@ -155,6 +210,7 @@ def _code_version() -> str | None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--trigger", choices=["manual", "scheduled"], default="manual")
+    parser.add_argument("--client-id", type=UUID, default=LEGACY_CLIENT_ID)
     args = parser.parse_args(argv)
 
     settings = get_settings()
@@ -162,21 +218,31 @@ def main(argv: list[str] | None = None) -> int:
         print("Only DATA_SOURCE=synthetic is supported until live connectors exist.")
         return 2
 
-    end_date = DEFAULT_START_DATE + timedelta(days=DEFAULT_DAYS - 1)
     try:
-        outcome = run_and_persist(
-            SyntheticConnector(),
+        outcome = run_client(
+            args.client_id,
             lambda: connect_backend(settings),
-            DEFAULT_START_DATE,
-            end_date,
+            factory=SyntheticConnectorFactory(),
+            window=SYNTHETIC_WINDOW,
             triggered_by=args.trigger,
             code_version=_code_version(),
         )
-    except PipelineRunError as error:
+    except (AccountSyncError, ClientAnalysisError) as error:
         print(error)
         return 1
-    print(f"Pipeline run {outcome.run_id} succeeded: report {outcome.report_id}")
-    for name, value in outcome.counts.items():
+    except Exception as error:
+        code = classify_error(error)
+        print(f"Run for client {args.client_id} failed: {code} (failure not recorded)")
+        return 1
+    for sync in outcome.syncs:
+        print(f"Account {sync.ad_account_id} synced (run {sync.run_id}):")
+        for name, value in sync.counts.items():
+            print(f"  {name}: {value}")
+    analysis = outcome.analysis
+    print(
+        f"Client {analysis.client_id} analysed (run {analysis.run_id}): report {analysis.report_id}"
+    )
+    for name, value in analysis.counts.items():
         print(f"  {name}: {value}")
     return 0
 

@@ -37,6 +37,7 @@ from growthpulse_ai.persistence.connection import (
 from growthpulse_ai.persistence.errors import DatabaseUnavailableError
 from growthpulse_ai.persistence.load import load_records
 from growthpulse_ai.persistence.store import ExperimentProposal, record_experiment_proposal
+from growthpulse_ai.persistence.tenancy import load_client
 from growthpulse_ai.pipeline.client_analysis import analyse_client
 from growthpulse_ai.pipeline.persisted_run import PipelineRunError, run_and_persist
 from growthpulse_ai.pipeline.sample_report import build_sample_report
@@ -157,9 +158,20 @@ def empty_tables() -> None:
         seed_legacy_client(connection)
 
 
+def legacy_client():
+    """The legacy client as stored, including any account a test registered."""
+    with writer() as connection:
+        return load_client(connection, LEGACY_SYNTHETIC_CLIENT.client_id)
+
+
 def run(connector: SyntheticConnector | None = None):
     return run_and_persist(
-        connector or SyntheticConnector(), writer, START, END, triggered_by="test"
+        connector or SyntheticConnector(),
+        writer,
+        START,
+        END,
+        client=legacy_client(),
+        triggered_by="test",
     )
 
 
@@ -275,8 +287,8 @@ def test_connector_failure_leaves_only_a_sanitized_failed_run():
 def test_database_rejection_rolls_back_the_whole_run(monkeypatch: pytest.MonkeyPatch):
     original = store.finding_rows
 
-    def corrupt(report):
-        rows = original(report)
+    def corrupt(report, **scope):
+        rows = original(report, **scope)
         rows[0]["severity"] = "catastrophic"
         return rows
 
@@ -326,6 +338,7 @@ def test_writer_can_propose_but_never_approve():
     finding_id = scalar("select finding_id from growthpulse.findings limit 1")
     proposal = ExperimentProposal(
         data_source=DataSource.SYNTHETIC,
+        client_id=LEGACY_SYNTHETIC_CLIENT.client_id,
         report_id=outcome.report_id,
         finding_id=finding_id,
         title="Test narrower targeting",
@@ -1125,7 +1138,7 @@ def test_stored_milestone_4_records_rebuild_the_same_report(timezone: str):
 
 
 def store_client(client, rows) -> str:
-    """Store a non-legacy client's rows through the Milestone 4 store, in a run of its own."""
+    """Store a non-legacy client's rows in a combined run of its own, scoped explicitly."""
     run_id = uuid4()
     with admin() as connection:
         start_client_run(connection, run_id, client.client_id)
@@ -1133,7 +1146,8 @@ def store_client(client, rows) -> str:
     report = build_report(result.records, data_quality=result.summary)
     with writer() as connection:
         store.save_run_results(
-            connection, run_id, data_source=DataSource.SYNTHETIC, connector="synthetic",
+            connection, run_id, client=client, data_source=DataSource.SYNTHETIC,
+            connector="synthetic",
             records=result.records, quarantined=result.quarantined, report=report,
         )  # fmt: skip
     return report["report_id"]

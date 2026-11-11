@@ -6,7 +6,8 @@ import pytest
 from psycopg import errors as pg_errors
 
 from factories import make_row
-from fake_db import FakeDatabase
+from fake_db import FakeDatabase, scope_answers
+from growthpulse_ai.accounts.legacy import LEGACY_CLIENT_ID, LEGACY_SYNTHETIC_CLIENT
 from growthpulse_ai.analytics.errors import AnalyticsError
 from growthpulse_ai.config import Settings
 from growthpulse_ai.connectors.base import ConnectorError
@@ -36,11 +37,13 @@ class BrokenConnector(SyntheticConnector):
 
 
 def run(database: FakeDatabase, connector=None, **kwargs):
+    scope_answers(database, LEGACY_CLIENT_ID)
     return run_and_persist(
         connector or SyntheticConnector(),
         database.connect,
         START,
         END,
+        client=LEGACY_SYNTHETIC_CLIENT,
         triggered_by="test",
         **kwargs,
     )

@@ -31,6 +31,8 @@ markers = [
 line-length = 100
 target-version = "py312"
 src = ["src", "tests"]
+# A verbatim copy of the Milestone 4 store, for upgrade tests. Never reformatted.
+extend-exclude = ["tests/m4_frozen/store.py", "tests/m4_frozen/rows.py"]
 
 [tool.ruff.lint]
 select = [

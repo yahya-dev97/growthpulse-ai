@@ -4,7 +4,8 @@ import psycopg
 import pytest
 
 from factories import make_row
-from fake_db import FakeDatabase
+from fake_db import FakeDatabase, scope_answers
+from growthpulse_ai.accounts.legacy import LEGACY_CLIENT_ID, LEGACY_SYNTHETIC_CLIENT
 from growthpulse_ai.connectors.synthetic import SyntheticConnector
 from growthpulse_ai.connectors.synthetic_data import DEFAULT_START_DATE
 from growthpulse_ai.data_quality import validate_rows
@@ -34,10 +35,12 @@ def run_inputs() -> dict:
 
 
 def save(database: FakeDatabase, run_inputs: dict, run_id=None) -> dict[str, int]:
+    scope_answers(database, LEGACY_CLIENT_ID)
     with database.connect() as connection:
         return save_run_results(
             connection,
             run_id or uuid4(),
+            client=LEGACY_SYNTHETIC_CLIENT,
             data_source=SYNTHETIC,
             connector="synthetic",
             **run_inputs,
@@ -50,7 +53,13 @@ def save(database: FakeDatabase, run_inputs: dict, run_id=None) -> dict[str, int
 def test_start_run_commits_a_running_row_on_its_own():
     database = FakeDatabase()
     run_id = uuid4()
-    start_run(database.connect(), run_id, data_source=SYNTHETIC, triggered_by="test")
+    start_run(
+        database.connect(),
+        run_id,
+        data_source=SYNTHETIC,
+        triggered_by="test",
+        client_id=LEGACY_CLIENT_ID,
+    )
     (statement,) = database.statements
     assert statement.query == store.INSERT_RUN
     assert statement.params["run_id"] == run_id
@@ -65,6 +74,7 @@ def test_start_run_rejects_a_malformed_code_version():
             uuid4(),
             data_source=SYNTHETIC,
             triggered_by="test",
+            client_id=LEGACY_CLIENT_ID,
             code_version="main; drop table",
         )
     assert database.statements == []
@@ -89,6 +99,8 @@ def test_results_are_written_in_dependency_order(run_inputs: dict):
         store.UPSERT_RECORD,
         store.UPSERT_QUARANTINE,
         store.INSERT_REPORT,
+        store.SELECT_REPORT_CLIENT,
+        store.SELECT_FOREIGN_FINDINGS,
         store.UPSERT_FINDING,
         store.FINISH_RUN,
     ]
@@ -127,7 +139,12 @@ def save_as_live(run_inputs: dict, message: str) -> None:
     database = FakeDatabase()
     with database.connect() as connection, pytest.raises(ValueError, match=message):
         save_run_results(
-            connection, uuid4(), data_source=DataSource.LIVE, connector="live", **run_inputs
+            connection,
+            uuid4(),
+            client=LEGACY_SYNTHETIC_CLIENT,
+            data_source=DataSource.LIVE,
+            connector="live",
+            **run_inputs,
         )
     assert database.statements == []
 
@@ -188,6 +205,7 @@ def test_failure_reports_when_the_run_was_not_running():
 def proposal(**overrides) -> ExperimentProposal:
     values = {
         "data_source": SYNTHETIC,
+        "client_id": LEGACY_CLIENT_ID,
         "report_id": "a" * 64,
         "finding_id": "b" * 64,
         "title": "Test a tighter keyword set",

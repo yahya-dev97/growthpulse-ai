@@ -592,3 +592,53 @@ def test_supabase_cli_files_hold_no_secrets():
     for path in [PROJECT_ROOT / "supabase" / "config.toml", *MIGRATIONS]:
         text = Path(path).read_text()
         assert not re.search(r"(sb_secret_|sbp_[0-9a-f]{20}|eyJhbGciOi|://[^:@\s]+:[^@\s]+@)", text)
+
+
+# The proposed migration that removes the Phase B scope fallbacks (not yet approved)
+
+PROPOSED_DIR = PROJECT_ROOT / "supabase" / "proposed"
+REMOVE_FALLBACKS = PROPOSED_DIR / "20261111200500_remove_scope_fallbacks.sql"
+
+
+def test_proposed_migration_is_kept_out_of_the_migrations_folder():
+    assert REMOVE_FALLBACKS.exists()
+    assert REMOVE_FALLBACKS.name not in {path.name for path in MIGRATIONS}
+    assert REMOVE_FALLBACKS.name[:14] > MIGRATIONS[-1].name[:14]
+
+
+def test_proposed_migration_only_removes_the_fallbacks():
+    code = strip_comments(REMOVE_FALLBACKS.read_text())
+    statements = [" ".join(s.split()) for s in code.split(";") if s.strip()]
+    assert statements == [
+        "alter table growthpulse.pipeline_runs alter column client_id drop default",
+        "drop trigger ad_performance_records_1_derive_scope "
+        "on growthpulse.ad_performance_records restrict",
+        "drop trigger findings_derive_scope on growthpulse.findings restrict",
+        "drop trigger analytics_reports_derive_scope on growthpulse.analytics_reports restrict",
+        "drop trigger experiment_proposals_derive_scope "
+        "on growthpulse.experiment_proposals restrict",
+        "drop function growthpulse.derive_scope() restrict",
+    ]
+
+
+def test_every_fallback_trigger_is_removed_and_the_run_scope_check_is_kept():
+    created = set(re.findall(r"create trigger (\w+_derive_scope)", SCOPE_SQL))
+    proposed = REMOVE_FALLBACKS.read_text()
+    assert created and all(f"drop trigger {name}" in proposed for name in created)
+    assert "check_record_run_scope" not in strip_comments(proposed)
+
+
+def test_milestone_4_fingerprints_are_read_only_and_cover_every_milestone_4_table():
+    path = VERIFICATION_DIR / "milestone_4_fingerprints.sql"
+    code = re.sub(r"'[^']*'", "''", strip_comments(path.read_text()).lower())
+    statements = [" ".join(s.split()) for s in code.split(";") if s.strip()]
+    assert statements[0] == "begin transaction read only"
+    assert statements[1:3] == ["set local timezone = ''", "set local datestyle = ''"]
+    assert statements[-1] == "rollback"
+    assert len(statements) == 5 and statements[3].startswith("select")
+    assert not re.search(r"\b(insert|update|delete|alter|create|drop|grant|truncate)\b", code)
+    text = path.read_text()
+    for table in table_bodies(TABLES_SQL):
+        assert f"from growthpulse.{table})" in text, table
+    for column in ("client_id", "ad_account_id", "run_kind", "data_quality"):
+        assert column not in text  # Milestone 5 columns never enter a fingerprint

@@ -35,7 +35,13 @@ class FailureAction(StrEnum):
 
 # Transient problems. Everything else needs a person, so it is never retried blindly.
 RETRYABLE_ERROR_CODES = frozenset(
-    {"database_unavailable", "connector_unavailable", "rate_limited", "abandoned"}
+    {
+        "database_unavailable",
+        "connector_unavailable",
+        "rate_limited",
+        "abandoned",
+        "incomplete_response",
+    }
 )
 REAUTH_ERROR_CODES = frozenset({"auth_failed"})
 
@@ -195,3 +201,15 @@ def common_complete_through(watermarks: Iterable[date | None]) -> date | None:
     if not values or any(value is None for value in values):
         return None
     return min(value for value in values if value is not None)
+
+
+def windows_cover(windows: Iterable[DateWindow], target: DateWindow) -> bool:
+    """True when the windows together include every day of the target window."""
+    covered_through = target.start - timedelta(days=1)
+    for window in sorted(windows, key=lambda w: (w.start, w.end)):
+        if window.start > covered_through + timedelta(days=1):
+            break
+        covered_through = max(covered_through, window.end)
+        if covered_through >= target.end:
+            return True
+    return covered_through >= target.end

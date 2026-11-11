@@ -57,6 +57,10 @@ class SyntheticConnector(AdDataConnector):
         self._client = client
         self._bind_account(account)
 
+    def _response_complete(self) -> bool:
+        """Generated or supplied rows are always the whole answer."""
+        return True
+
     def _fetch_raw(self, start_date: date, end_date: date) -> list[Any]:
         if self._rows is not None:
             rows = self._rows

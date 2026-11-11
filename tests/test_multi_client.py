@@ -31,12 +31,19 @@ from growthpulse_ai.connectors.synthetic_data import (
     SyntheticClientSpec,
     generate_synthetic_rows,
 )
-from growthpulse_ai.data_quality import IssueCode, combine_summaries
-from growthpulse_ai.persistence.rows import finding_rows
+from growthpulse_ai.data_quality import IssueCode, combine_summaries, window_quality_summary
 from growthpulse_ai.pipeline.client_analysis import analyse_client
 from growthpulse_ai.pipeline.sample_report import SAMPLE_REPORT_PATH, build_sample_report
 from growthpulse_ai.schema import DataSource, Platform
-from multi_client import CLIENTS, END, START, client_context, stable_uuid, sync_client
+from multi_client import (
+    CLIENTS,
+    END,
+    START,
+    client_context,
+    stable_uuid,
+    sync_client,
+    sync_summaries,
+)
 
 # Fingerprints of the Milestone 4 dataset and report, recorded before Milestone 5 changes.
 M4_ROWS_SHA256 = "fcf86a71e6d1f9a1776863b8443a0e4bc809ef3dc5fdba1f423683a78fabf45f"
@@ -89,7 +96,7 @@ def test_every_milestone_4_record_maps_to_exactly_one_legacy_account():
 def test_every_milestone_4_finding_maps_to_one_legacy_account_without_changing_ids():
     report = build_sample_report()
     assigned = assign_findings(LEGACY_SYNTHETIC_CLIENT, report)
-    assert set(assigned) == {row["finding_id"] for row in finding_rows(report)}
+    assert set(assigned) == {finding["finding_id"] for finding in report_findings(report)}
     assert len(assigned) == 19
     assert set(assigned.values()) <= {LEGACY_GOOGLE_ACCOUNT_ID, LEGACY_META_ACCOUNT_ID}
     # Assignment reads the report; it never rewrites it.
@@ -98,9 +105,11 @@ def test_every_milestone_4_finding_maps_to_one_legacy_account_without_changing_i
 
 def test_independent_account_syncs_add_up_to_the_combined_fetch():
     whole = combined()
-    records, summaries = sync_client(LEGACY_SYNTHETIC_CLIENT)
+    records, evidence = sync_client(LEGACY_SYNTHETIC_CLIENT)
     assert sorted(r.record_id for r in records) == sorted(r.record_id for r in whole.records)
-    assert combine_summaries(summaries.values()) == whole.summary
+    assert combine_summaries(sync_summaries(LEGACY_SYNTHETIC_CLIENT).values()) == whole.summary
+    # Recomputed from the records and evidence alone, quality matches the combined fetch.
+    assert window_quality_summary(records, evidence) == whole.summary
 
 
 def test_client_analysis_from_account_syncs_reproduces_the_milestone_4_report():
@@ -196,18 +205,22 @@ def test_analysis_refuses_another_clients_records():
         analyse_client(CLIENTS[1], [*ie_records, uk_records[0]], ie_summaries)
 
 
-def test_analysis_refuses_a_summary_from_another_client():
-    records, summaries = sync_client(CLIENTS[1])
-    foreign = {**summaries, LEGACY_GOOGLE_ACCOUNT_ID: combined().summary}
+def test_analysis_refuses_evidence_from_another_client():
+    records, evidence = sync_client(CLIENTS[1])
+    foreign = [{"quarantine_id": "0" * 64, "ad_account_id": str(LEGACY_GOOGLE_ACCOUNT_ID),
+                "reporting_date": "2026-10-05", "rows": 1, "errors_by_code": {"x": 1}}]  # fmt: skip
     with pytest.raises(AccountMismatchError):
-        analyse_client(CLIENTS[1], records, foreign)
+        analyse_client(CLIENTS[1], records, [*evidence, *foreign])
 
 
-def test_analysis_needs_a_summary_for_every_account_with_records():
-    records, summaries = sync_client(CLIENTS[1])
-    summaries.pop(next(iter(summaries)))
-    with pytest.raises(ValueError, match="quality summary"):
-        analyse_client(CLIENTS[1], records, summaries)
+def test_report_quality_comes_from_the_analysed_records_not_how_they_were_synced():
+    records, _ = sync_client(LEGACY_SYNTHETIC_CLIENT)
+    first_half = [r for r in records if r.reporting_date.day <= 15]
+    second_half = [r for r in records if r.reporting_date.day > 15]
+    # The same records in any grouping or order give the same report.
+    one = analyse_client(LEGACY_SYNTHETIC_CLIENT, [*second_half, *first_half])
+    two = analyse_client(LEGACY_SYNTHETIC_CLIENT, [*first_half, *second_half])
+    assert one.report == two.report == build_sample_report()
 
 
 def test_mixed_currency_client_keeps_every_total_in_one_currency():
@@ -240,9 +253,10 @@ def test_two_accounts_on_one_platform_are_reported_separately():
 
 def test_every_synthetic_client_is_analysable():
     for client in CLIENTS:
-        records, summaries = sync_client(client)
-        report = analyse_client(client, records, summaries).report
-        assert report == build_report(records, data_quality=combine_summaries(summaries.values()))
+        records, evidence = sync_client(client)
+        report = analyse_client(client, records, evidence).report
+        summaries = sync_summaries(client).values()
+        assert report == build_report(records, data_quality=combine_summaries(summaries))
 
 
 # Account guard and factory

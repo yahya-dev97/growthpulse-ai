@@ -125,3 +125,10 @@ class FakeConnection:
 
 
 Connect = Callable[[], FakeConnection]
+
+
+def scope_answers(database: FakeDatabase, client_id) -> FakeDatabase:
+    """Answer the store's scope checks as a database holding only this client's rows would."""
+    database.results.setdefault("select client_id from growthpulse.analytics_reports", (client_id,))
+    database.results.setdefault("select count(*) from growthpulse.findings", (0,))
+    return database

@@ -19,6 +19,7 @@ from psycopg import errors as pg_errors
 from psycopg import sql
 from psycopg.types.json import Jsonb
 
+from growthpulse_ai.accounts.assignment import report_findings
 from growthpulse_ai.accounts.legacy import (
     LEGACY_CLIENT_ID,
     LEGACY_GOOGLE_ACCOUNT_ID,
@@ -38,12 +39,13 @@ from growthpulse_ai.connectors.synthetic import SyntheticConnector
 from growthpulse_ai.connectors.synthetic_data import SYNTHETIC_CLIENTS, generate_synthetic_rows
 from growthpulse_ai.persistence import store
 from growthpulse_ai.persistence.load import load_records
-from growthpulse_ai.persistence.rows import finding_rows
 from growthpulse_ai.persistence.store import ExperimentProposal, record_experiment_proposal
+from growthpulse_ai.persistence.tenancy import load_client
 from growthpulse_ai.pipeline.client_analysis import analyse_client
 from growthpulse_ai.pipeline.persisted_run import run_and_persist
 from growthpulse_ai.pipeline.sample_report import build_sample_report
 from growthpulse_ai.schema import DataSource
+from m4_frozen import run_milestone_4_pipeline
 from multi_client import CLIENTS, END, START, sync_client
 from pg_helpers import (
     API_ROLES,
@@ -123,9 +125,20 @@ def server():
 # State builders
 
 
+def legacy_client():
+    with as_role(WRITER) as connection:
+        return load_client(connection, LEGACY_CLIENT_ID)
+
+
 def run_m4_pipeline():
+    """A combined synthetic run of the legacy client, with its scope passed explicitly."""
     return run_and_persist(
-        SyntheticConnector(), lambda: as_role(WRITER), START, END, triggered_by="test"
+        SyntheticConnector(),
+        lambda: as_role(WRITER),
+        START,
+        END,
+        client=legacy_client(),
+        triggered_by="test",
     )
 
 
@@ -134,8 +147,10 @@ def milestone_4_state() -> None:
     drop_everything()
     apply(M4_MIGRATIONS)
     enable_test_logins()
-    first, second = run_m4_pipeline(), run_m4_pipeline()
-    assert first.counts["records_written"] == 300 and second.counts["records_written"] == 0
+    # The frozen Milestone 4 store, run twice, exactly as on Supabase.
+    first = run_milestone_4_pipeline(lambda: as_role(WRITER), START, END)
+    second = run_milestone_4_pipeline(lambda: as_role(WRITER), START, END)
+    assert first["records_written"] == 300 and second["records_written"] == 0
 
 
 def upgrade() -> None:
@@ -251,7 +266,7 @@ def test_historical_report_bytes_hash_and_ids_are_unchanged(upgraded):
     }
     assert stored_records == {r.record_id for r in SyntheticConnector().fetch(START, END).records}
     stored_findings = {f for (f,) in rows("select finding_id from growthpulse.findings")}
-    assert stored_findings == {row["finding_id"] for row in finding_rows(build_sample_report())}
+    assert stored_findings == {f["finding_id"] for f in report_findings(build_sample_report())}
 
 
 def test_backfill_maps_210_google_and_90_meta_records_by_stored_identity(upgraded):
@@ -344,7 +359,12 @@ def test_combined_run_after_upgrade_still_writes_real_changes_in_scope(upgraded)
     raw = generate_synthetic_rows()
     raw[0] = {**raw[0], "spend": "999.99"}
     outcome = run_and_persist(
-        SyntheticConnector(rows=raw), lambda: as_role(WRITER), START, END, triggered_by="test"
+        SyntheticConnector(rows=raw),
+        lambda: as_role(WRITER),
+        START,
+        END,
+        client=legacy_client(),
+        triggered_by="test",
     )
     assert outcome.counts["records_written"] == 1 and outcome.counts["reports_written"] == 1
     assert rows(
@@ -503,6 +523,7 @@ def two_clients(upgraded) -> UUID:
         store.save_run_results(
             connection,
             run_id,
+            client=IRELAND,
             data_source=DataSource.SYNTHETIC,
             connector="synthetic",
             records=result.records,
@@ -1089,6 +1110,7 @@ def test_writer_cannot_approve_experiments_but_the_owner_can(upgraded):
             connection,
             ExperimentProposal(
                 data_source=DataSource.SYNTHETIC,
+                client_id=LEGACY_CLIENT_ID,
                 report_id=M4_REPORT_ID,
                 title="Test",
                 hypothesis="h",

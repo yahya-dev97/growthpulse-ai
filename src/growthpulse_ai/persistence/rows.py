@@ -2,6 +2,10 @@
 
 Reports arrive as the JSON-compatible dict built by analytics, so this package depends on
 the shared schema only and never imports analytics.
+
+Every row carries its scope explicitly: the account a record or finding belongs to and the
+client a report or finding belongs to. Nothing relies on a database default. The ID
+formulas for records, reports and findings are unchanged from Milestone 4.
 """
 
 import hashlib
@@ -24,9 +28,10 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def record_row(record: AdPerformanceRecord, run_id: UUID) -> Row:
+def record_row(record: AdPerformanceRecord, run_id: UUID, *, ad_account_id: UUID) -> Row:
     attribution = record.attribution
     return {
+        "ad_account_id": ad_account_id,
         "record_id": record.record_id,
         "data_source": record.data_source.value,
         "reporting_date": record.reporting_date,
@@ -65,12 +70,16 @@ def quarantine_rows(
     data_source: DataSource,
     connector: str,
     run_id: UUID,
+    ad_account_id: UUID | None = None,
 ) -> list[Row]:
     """One row per distinct payload. Repeated payloads merge their issues.
 
     The ID depends on the payload, not its position, so the same bad row seen again in a
     later run updates the existing entry. Issues keep code, severity, and field only.
     The raw payload is stored for synthetic data only.
+
+    A per-account sync passes its account, which joins the ID, so two accounts' identical
+    bad rows stay apart. Combined runs pass none and keep the Milestone 4 ID.
     """
     # payload hash -> (first row index, canonical payload, issues from every repeat)
     grouped: dict[str, tuple[int, str, set[tuple[str, str, str | None]]]] = {}
@@ -82,11 +91,13 @@ def quarantine_rows(
     rows = []
     for payload_sha256, (row_index, canonical, issues) in grouped.items():
         ordered = sorted(issues, key=lambda issue: (issue[0], issue[1], issue[2] or ""))
+        identity = [data_source.value, connector, payload_sha256]
+        if ad_account_id is not None:
+            identity.append(str(ad_account_id))
         rows.append(
             {
-                "quarantine_id": _sha256(
-                    json.dumps([data_source.value, connector, payload_sha256])
-                ),
+                "quarantine_id": _sha256(json.dumps(identity)),
+                "ad_account_id": ad_account_id,
                 "data_source": data_source.value,
                 "connector": connector,
                 "row_index": row_index,
@@ -104,9 +115,55 @@ def quarantine_rows(
     return sorted(rows, key=lambda row: row["quarantine_id"])
 
 
-def report_row(report: Mapping[str, Any], run_id: UUID) -> Row:
+def _reporting_date(raw: Any) -> str | None:
+    """The row's own reporting date, if it has a valid one; quarantined rows may not."""
+    try:
+        return date.fromisoformat(str(raw["reporting_date"])).isoformat()
+    except (KeyError, TypeError, ValueError, IndexError):
+        return None
+
+
+def quarantine_evidence(
+    quarantined: Iterable[QuarantinedRow],
+    *,
+    data_source: DataSource,
+    connector: str,
+    ad_account_id: UUID,
+) -> list[Row]:
+    """What one account sync quarantined, for analyses of any window to count once.
+
+    One item per quarantine ID (the same ID as the stored quarantine row): how many copies
+    the sync saw, their error codes, and the row's own reporting date (None if it has no
+    valid one). Values from the payload are never included.
+    """
+    grouped: dict[str, Row] = {}
+    for item in quarantined:
+        canonical = _canonical_payload(item.raw)
+        payload_sha256 = _sha256(canonical)
+        identity = [data_source.value, connector, payload_sha256, str(ad_account_id)]
+        quarantine_id = _sha256(json.dumps(identity))
+        entry = grouped.setdefault(
+            quarantine_id,
+            {
+                "quarantine_id": quarantine_id,
+                "ad_account_id": str(ad_account_id),
+                "reporting_date": _reporting_date(item.raw),
+                "rows": 0,
+                "errors_by_code": {},
+            },
+        )
+        entry["rows"] += 1
+        for issue in item.issues:
+            entry["errors_by_code"][issue.code.value] = (
+                entry["errors_by_code"].get(issue.code.value, 0) + 1
+            )
+    return [grouped[key] for key in sorted(grouped)]
+
+
+def report_row(report: Mapping[str, Any], run_id: UUID, *, client_id: UUID) -> Row:
     period = report["full_period"]["period"]
     return {
+        "client_id": client_id,
         "report_id": report["report_id"],
         "run_id": run_id,
         "data_source": report["data_source"],
@@ -123,15 +180,25 @@ def _decimal_or_none(value: str | None) -> Decimal | None:
     return None if value is None else Decimal(value)
 
 
-def finding_rows(report: Mapping[str, Any]) -> list[Row]:
-    """Active and suppressed findings from every comparison in the report."""
+def finding_rows(
+    report: Mapping[str, Any], *, client_id: UUID, finding_accounts: Mapping[str, UUID]
+) -> list[Row]:
+    """Active and suppressed findings from every comparison in the report.
+
+    ``finding_accounts`` maps each finding ID to its account. A finding without one is an
+    error, never a guess.
+    """
     data_as_of = datetime.fromisoformat(report["data_as_of"])
     rows: list[Row] = []
     for comparison in report["comparisons"]:
         for finding in (*comparison["findings"], *comparison["suppressed_findings"]):
             outcome = finding["noise_guard"]["outcome"]
+            if finding["finding_id"] not in finding_accounts:
+                raise ValueError("A finding has no account in its client")
             rows.append(
                 {
+                    "client_id": client_id,
+                    "ad_account_id": finding_accounts[finding["finding_id"]],
                     "finding_id": finding["finding_id"],
                     "data_source": finding["data_source"],
                     "rule_id": finding["rule_id"],

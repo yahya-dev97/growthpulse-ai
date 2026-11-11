@@ -6,6 +6,7 @@ Warnings keep the record but flag something a reader should know about.
 Issue messages and logs never contain field values, so a misplaced secret cannot leak.
 """
 
+import json
 from collections import Counter, defaultdict
 from collections.abc import Callable, Hashable, Iterable
 from dataclasses import dataclass, field
@@ -107,6 +108,65 @@ def combine_summaries(summaries: Iterable[dict[str, Any]]) -> dict[str, Any]:
         for name in SUMMARY_COUNTERS:
             counters[name].update(summary[name])
     return {**totals, **{name: dict(counter) for name, counter in counters.items()}}
+
+
+QUALITY_EVIDENCE_VERSION = 1
+
+
+def record_warnings(records: Iterable[AdPerformanceRecord]) -> list[QualityIssue]:
+    """The warnings validation would raise for these records, recomputed from the records.
+
+    Record order does not matter. A client analysis uses this on its stored, deduplicated
+    records, so re-fetched days are never counted twice.
+    """
+    candidates = list(enumerate(sorted(records, key=lambda record: record.record_id)))
+    warnings = [issue for candidate in candidates for issue in _record_warnings(candidate)]
+    warnings.extend(_dataset_warnings(candidates))
+    return warnings
+
+
+def _evidence_rank(item: dict[str, Any]) -> tuple[int, str]:
+    return (item["rows"], json.dumps(item, sort_keys=True))
+
+
+def merge_quarantine_evidence(items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One evidence item per quarantine ID, whatever the order or overlap of the syncs.
+
+    Overlapping re-fetches report the same bad row under the same ID, so it is counted
+    once. Where two syncs saw a different number of copies, the larger count is kept, and
+    ties are broken by content, so the result never depends on the order syncs ran in.
+    """
+    chosen: dict[str, dict[str, Any]] = {}
+    for item in items:
+        current = chosen.get(item["quarantine_id"])
+        if current is None or _evidence_rank(item) > _evidence_rank(current):
+            chosen[item["quarantine_id"]] = item
+    return [chosen[key] for key in sorted(chosen)]
+
+
+def window_quality_summary(
+    records: Iterable[AdPerformanceRecord], quarantine_evidence: Iterable[dict[str, Any]]
+) -> dict[str, Any]:
+    """A validation summary for an analysis window, from records and quarantine evidence.
+
+    Valid records and warnings come from the stored records themselves; quarantined rows
+    come from deduplicated sync evidence. Same records and evidence, same summary.
+    """
+    rows = list(records)
+    warnings = record_warnings(rows)
+    evidence = merge_quarantine_evidence(quarantine_evidence)
+    errors: Counter[str] = Counter()
+    for item in evidence:
+        errors.update(item["errors_by_code"])
+    quarantined = sum(item["rows"] for item in evidence)
+    return {
+        "total_rows": len(rows) + quarantined,
+        "valid_records": len(rows),
+        "quarantined_rows": quarantined,
+        "warnings": len(warnings),
+        "errors_by_code": dict(errors),
+        "warnings_by_code": dict(Counter(issue.code.value for issue in warnings)),
+    }
 
 
 # Row index and parsed record, for rows that passed schema validation.

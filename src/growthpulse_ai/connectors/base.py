@@ -32,6 +32,8 @@ class AdDataConnector(ABC):
     data_source: ClassVar[DataSource]
     # Set for a per-account sync. Rows naming any other account are then quarantined.
     account: AccountContext | None = None
+    # Whether the last fetch is known to be the complete answer for its window.
+    last_fetch_complete: bool = False
 
     def _bind_account(self, account: AccountContext | None) -> None:
         if account is not None and account.data_source is not self.data_source:
@@ -42,12 +44,24 @@ class AdDataConnector(ABC):
     def _fetch_raw(self, start_date: date, end_date: date) -> Iterable[Any]:
         """Return raw rows for the inclusive date range."""
 
+    def _response_complete(self) -> bool:
+        """Whether the fetch just made returned every row for its window.
+
+        False unless a connector proves it: a live connector must confirm a successful,
+        fully paginated response. Partial pages, authorisation failures and API errors are
+        never complete, and an empty result is only trusted when it is complete. An account
+        sync advances its watermark only for complete responses.
+        """
+        return False
+
     def fetch(self, start_date: date, end_date: date) -> ValidationResult:
         """Read, validate, and return records for the inclusive date range."""
         if start_date > end_date:
             raise ValueError("start_date must not be after end_date")
+        self.last_fetch_complete = False
         try:
             raw_rows = list(self._fetch_raw(start_date, end_date))
+            complete = self._response_complete()
         except Exception as error:
             # API errors can embed tokens in URLs, so only the exception type is surfaced.
             raise ConnectorError(
@@ -62,6 +76,7 @@ class AdDataConnector(ABC):
         result = validate_rows(
             raw_rows, expected_source=self.data_source, expected_account=expected_account
         )
+        self.last_fetch_complete = complete
         summary = result.summary
         logger.info(
             "connector=%s total_rows=%d valid_records=%d quarantined_rows=%d warnings=%d",
