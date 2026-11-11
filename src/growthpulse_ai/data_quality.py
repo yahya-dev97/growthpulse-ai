@@ -15,7 +15,7 @@ from typing import Any
 from pydantic import ValidationError
 from pydantic_core import ErrorDetails
 
-from growthpulse_ai.schema import AdPerformanceRecord, DataSource
+from growthpulse_ai.schema import AdPerformanceRecord, DataSource, Platform
 
 
 class Severity(StrEnum):
@@ -39,6 +39,7 @@ class IssueCode(StrEnum):
     DUPLICATE_RECORD = "duplicate_record"
     CONFLICTING_DUPLICATE = "conflicting_duplicate"
     DATA_SOURCE_MISMATCH = "data_source_mismatch"
+    ACCOUNT_MISMATCH = "account_mismatch"
     # Warnings
     MISSING_ATTRIBUTION = "missing_attribution"
     ZERO_CONVERSIONS_WITH_SPEND = "zero_conversions_with_spend"
@@ -84,6 +85,28 @@ class ValidationResult:
             "errors_by_code": dict(errors),
             "warnings_by_code": dict(Counter(issue.code.value for issue in self.warnings)),
         }
+
+
+SUMMARY_COUNTS = ("total_rows", "valid_records", "quarantined_rows", "warnings")
+SUMMARY_COUNTERS = ("errors_by_code", "warnings_by_code")
+
+
+def combine_summaries(summaries: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """Add per-account validation summaries into one, as if validated together.
+
+    Every check groups rows within one account, so validating accounts separately finds the
+    same issues as validating them together, and the counts simply add up.
+    """
+    totals: dict[str, int] = dict.fromkeys(SUMMARY_COUNTS, 0)
+    counters: dict[str, Counter[str]] = {name: Counter() for name in SUMMARY_COUNTERS}
+    for summary in summaries:
+        if set(summary) != {*SUMMARY_COUNTS, *SUMMARY_COUNTERS}:
+            raise ValueError("Not a validation summary")
+        for name in SUMMARY_COUNTS:
+            totals[name] += summary[name]
+        for name in SUMMARY_COUNTERS:
+            counters[name].update(summary[name])
+    return {**totals, **{name: dict(counter) for name, counter in counters.items()}}
 
 
 # Row index and parsed record, for rows that passed schema validation.
@@ -301,9 +324,16 @@ def _dataset_warnings(candidates: list[_Candidate]) -> list[QualityIssue]:
 
 
 def validate_rows(
-    rows: Iterable[Any], expected_source: DataSource | None = None
+    rows: Iterable[Any],
+    expected_source: DataSource | None = None,
+    expected_account: tuple[Platform, str] | None = None,
 ) -> ValidationResult:
-    """Validate raw rows, returning clean records, quarantined rows, and warnings."""
+    """Validate raw rows, returning clean records, quarantined rows, and warnings.
+
+    With ``expected_account`` (platform, external account ID), a row naming any other
+    account is quarantined as ``account_mismatch``, so one account's sync can never store
+    another account's data.
+    """
     raw_rows = list(rows)
     rejections: _Rejections = defaultdict(list)
     candidates: list[_Candidate] = []
@@ -322,6 +352,17 @@ def validate_rows(
                 IssueCode.DATA_SOURCE_MISMATCH,
                 "Row data_source does not match this connector",
                 "data_source",
+            )
+            continue
+        if expected_account is not None and (record.platform, record.account_id) != (
+            expected_account
+        ):
+            _reject(
+                rejections,
+                candidate,
+                IssueCode.ACCOUNT_MISMATCH,
+                "Row belongs to a different advertising account than the one being synced",
+                "account_id",
             )
             continue
         candidates.append(candidate)

@@ -9,18 +9,31 @@ import growthpulse_ai
 ROOT_PACKAGE = "growthpulse_ai"
 PACKAGE_DIR = Path(growthpulse_ai.__file__).parent
 
-LAYERS = {"connectors", "analytics", "ai_analysis", "persistence", "pipeline", "dashboard"}
+LAYERS = {
+    "connectors",
+    "analytics",
+    "ai_analysis",
+    "persistence",
+    "pipeline",
+    "dashboard",
+    "credentials",
+}
 
 FORBIDDEN_IMPORTS = {
     # Shared modules sit below every layer, so any layer can depend on them.
-    "schema": LAYERS | {"data_quality"},
-    "data_quality": LAYERS,
+    "schema": LAYERS | {"data_quality", "accounts"},
+    "data_quality": LAYERS | {"accounts"},
+    "accounts": LAYERS,
+    # Tokens: nothing above may reach analytics, AI or the dashboard through credentials,
+    # and credentials depend on no layer.
+    "credentials": LAYERS - {"credentials"},
     "connectors": {"analytics", "ai_analysis", "persistence", "pipeline", "dashboard"},
-    "analytics": {"connectors", "ai_analysis", "persistence", "pipeline", "dashboard"},
-    "ai_analysis": {"connectors", "persistence", "pipeline", "dashboard"},
+    "analytics": {"connectors", "ai_analysis", "persistence", "pipeline", "dashboard"}
+    | {"credentials", "accounts"},
+    "ai_analysis": {"connectors", "persistence", "pipeline", "dashboard", "credentials"},
     "persistence": {"connectors", "analytics", "ai_analysis", "pipeline", "dashboard"},
     "pipeline": {"dashboard"},
-    "dashboard": {"connectors", "ai_analysis", "pipeline"},
+    "dashboard": {"connectors", "ai_analysis", "pipeline", "credentials"},
 }
 
 

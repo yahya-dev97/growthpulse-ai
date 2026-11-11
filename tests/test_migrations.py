@@ -10,10 +10,21 @@ from pathlib import Path
 
 import pytest
 
+from growthpulse_ai.accounts.legacy import (
+    LEGACY_CLIENT_ID,
+    LEGACY_EXTERNAL_ACCOUNT_IDS,
+    LEGACY_GOOGLE_ACCOUNT_ID,
+    LEGACY_META_ACCOUNT_ID,
+    LEGACY_SYNTHETIC_CLIENT,
+    LEGACY_WORKSPACE_ID,
+)
+from growthpulse_ai.accounts.models import AccountStatus, ClientStatus, ConnectionStatus
+from growthpulse_ai.accounts.scheduling import SyncFrequency, SyncStatus
 from growthpulse_ai.analytics.anomalies import Direction, RuleId, Severity
 from growthpulse_ai.analytics.noise import NoiseGuardOutcome
 from growthpulse_ai.analytics.periods import ComparisonPurpose
 from growthpulse_ai.config import PROJECT_ROOT
+from growthpulse_ai.credentials.crypto import TokenType
 from growthpulse_ai.persistence import store
 from growthpulse_ai.schema import (
     AttributionModel,
@@ -26,54 +37,84 @@ from growthpulse_ai.schema import (
 
 MIGRATIONS_DIR = PROJECT_ROOT / "supabase" / "migrations"
 ROLLBACK_DIR = PROJECT_ROOT / "supabase" / "rollback"
+DROP_ALL = ROLLBACK_DIR / "20261111100000_drop_growthpulse.sql"
+REVERT_M5 = ROLLBACK_DIR / "20261111200000_revert_milestone_5.sql"
 MIGRATIONS = sorted(MIGRATIONS_DIR.glob("*.sql"))
 SQL = "\n".join(path.read_text() for path in MIGRATIONS)
 TABLES_SQL = MIGRATIONS[0].read_text()
 ACCESS_SQL = MIGRATIONS[1].read_text()
 VIEWS_SQL = MIGRATIONS[2].read_text()
+(TENANCY_SQL, SCOPE_SQL, TOKENS_SQL, OWNER_SQL, GRANTS_SQL) = (
+    path.read_text() for path in MIGRATIONS[3:]
+)
 API_ROLES = ("public", "anon", "authenticated", "service_role")
-APPEND_ONLY = ("analytics_reports", "experiment_proposals", "experiment_status_events")
+APPEND_ONLY = (
+    "analytics_reports",
+    "experiment_proposals",
+    "experiment_status_events",
+    "analytics_report_breakdowns",
+    "owner_action_log",
+)
 
 
 def strip_comments(sql: str) -> str:
     return re.sub(r"--[^\n]*", "", sql)
 
 
+def table_bodies(sql: str = SQL) -> dict[str, str]:
+    return dict(
+        re.findall(r"create table growthpulse\.(\w+) \((.*?)\n\);", strip_comments(sql), re.DOTALL)
+    )
+
+
 def table_columns() -> dict[str, set[str]]:
+    """Columns of every growthpulse table, including those added by later migrations."""
     tables = {}
-    for name, body in re.findall(
-        r"create table growthpulse\.(\w+) \((.*?)\n\);", strip_comments(TABLES_SQL), re.DOTALL
-    ):
+    for name, body in table_bodies().items():
         columns = set()
         for line in body.splitlines():
             match = re.match(r"\s{4}(\w+) ", line)
-            if match and match.group(1) not in {"constraint", "check"}:
+            if match and match.group(1) not in {"constraint", "check", "primary"}:
                 columns.add(match.group(1))
         tables[name] = columns
+    for name, body in re.findall(
+        r"alter table growthpulse\.(\w+)\s(.*?);", strip_comments(SQL), re.DOTALL
+    ):
+        tables[name] |= set(re.findall(r"add column (\w+)", body))
     return tables
 
 
-def check_values(column: str) -> list[set[str]]:
+def check_values(column: str, sql: str = SQL) -> list[set[str]]:
     """Every allowed-value list for a column, across all tables."""
     pattern = rf"\b{column} in \(([^)]*)\)"
-    return [set(re.findall(r"'(\w+)'", match)) for match in re.findall(pattern, TABLES_SQL)]
+    return [
+        set(re.findall(r"'(\w+)'", match)) for match in re.findall(pattern, strip_comments(sql))
+    ]
 
 
 def writer_update_grants() -> dict[str, set[str]]:
-    grants = {}
+    grants: dict[str, set[str]] = {}
     for columns, table in re.findall(
         r"grant update \((.*?)\)\s+on growthpulse\.(\w+) to growthpulse_writer",
-        ACCESS_SQL,
+        SQL,
         re.DOTALL,
     ):
-        grants[table] = {column.strip() for column in columns.split(",")}
+        grants.setdefault(table, set()).update(column.strip() for column in columns.split(","))
     return grants
 
 
 def test_migrations_are_ordered_and_named():
     assert [path.name[:14] for path in MIGRATIONS] == sorted(path.name[:14] for path in MIGRATIONS)
     assert all(re.fullmatch(r"\d{14}_[a-z_]+\.sql", path.name) for path in MIGRATIONS)
-    assert len(MIGRATIONS) == 3
+    assert len(MIGRATIONS) == 8
+
+
+def test_milestone_4_migrations_are_unchanged_in_name():
+    assert [path.name for path in MIGRATIONS[:3]] == [
+        "20261111100000_create_growthpulse_tables.sql",
+        "20261111100100_create_access_roles.sql",
+        "20261111100200_create_dashboard_views.sql",
+    ]
 
 
 def test_every_expected_table_exists():
@@ -85,7 +126,19 @@ def test_every_expected_table_exists():
         "findings",
         "experiment_proposals",
         "experiment_status_events",
+        "workspaces",
+        "clients",
+        "provider_connections",
+        "discovered_ad_accounts",
+        "ad_accounts",
+        "account_sync_config",
+        "account_sync_state",
+        "owner_action_log",
+        "analytics_report_breakdowns",
     }
+    assert re.findall(r"create table (growthpulse_secrets\.\w+)", SQL) == [
+        "growthpulse_secrets.oauth_credentials"
+    ]
 
 
 # Allowed values in SQL match the Python enums.
@@ -112,6 +165,29 @@ def test_check_constraints_match_python_enums(column: str, enum: type[StrEnum]):
     lists = check_values(column)
     assert lists, f"no CHECK list for {column}"
     assert all(values == {member.value for member in enum} for values in lists)
+
+
+@pytest.mark.parametrize(
+    ("table", "column", "enum"),
+    [
+        ("clients", "status", ClientStatus),
+        ("clients", "data_source", DataSource),
+        ("provider_connections", "status", ConnectionStatus),
+        ("provider_connections", "provider", Platform),
+        ("discovered_ad_accounts", "platform", Platform),
+        ("ad_accounts", "status", AccountStatus),
+        ("ad_accounts", "platform", Platform),
+        ("account_sync_config", "frequency", SyncFrequency),
+        ("account_sync_state", "status", SyncStatus),
+    ],
+)
+def test_milestone_5_check_lists_match_python_enums(table: str, column: str, enum):
+    lists = check_values(column, table_bodies()[table])
+    assert lists == [{member.value for member in enum}], (table, column)
+
+
+def test_token_types_match_python():
+    assert check_values("token_type", TOKENS_SQL) == [{member.value for member in TokenType}]
 
 
 # The SQL the store runs fits the schema and the grants.
@@ -166,7 +242,13 @@ def test_update_grants_exclude_identity_and_first_seen_columns():
             "last_seen_run_id",
             "latest_report_id",
             "report_id",
+            "lease_run_id",
         }, table
+
+
+def test_scope_columns_are_never_updatable_by_the_writer():
+    for table, granted in writer_update_grants().items():
+        assert not granted & {"client_id", "ad_account_id", "run_kind", "data_source"}, table
 
 
 # Access control
@@ -175,6 +257,8 @@ def test_update_grants_exclude_identity_and_first_seen_columns():
 def test_every_table_has_row_level_security():
     enabled = set(re.findall(r"alter table growthpulse\.(\w+) enable row level security", SQL))
     assert enabled == set(table_columns())
+    assert "alter table growthpulse_secrets.oauth_credentials enable row level security" in SQL
+    assert "create policy" not in strip_comments(TOKENS_SQL)  # owner-only, through functions
 
 
 def test_nothing_is_granted_to_public_or_supabase_api_roles():
@@ -192,6 +276,7 @@ def test_dashboard_gets_select_on_read_views_only():
     assert grants == [
         "grant usage on schema growthpulse_read to growthpulse_dashboard;",
         "grant select on all tables in schema growthpulse_read to growthpulse_dashboard;",
+        "grant select on all tables in schema growthpulse_read to growthpulse_dashboard;",
     ]
 
 
@@ -203,7 +288,11 @@ def test_writer_never_gets_delete_truncate_or_schema_rights():
 def test_history_tables_cannot_be_updated_by_the_writer():
     assert not set(writer_update_grants()) & set(APPEND_ONLY)
     for table in APPEND_ONLY:
-        assert f"before update on growthpulse.{table}" in TABLES_SQL
+        assert re.search(
+            rf"before update on growthpulse\.{table}\s+for each row execute function "
+            r"growthpulse\.reject_update\(\)",
+            SQL,
+        ), table
 
 
 def test_pipeline_can_only_propose_experiments():
@@ -214,37 +303,81 @@ def test_pipeline_can_only_propose_experiments():
 
 def test_migrations_hold_no_secrets_or_privileged_attributes():
     lowered = strip_comments(SQL).lower()
-    for forbidden in ("password", "superuser", "bypassrls", "createrole", "security definer"):
+    for forbidden in ("password", "superuser", "bypassrls", "createrole", "replication"):
         assert forbidden not in lowered, forbidden
     assert not re.search(r"\blogin\b", lowered.replace("nologin", ""))
+    for role in re.findall(r"create role (\w+)([^;]*);", lowered):
+        assert role[1].strip() == "nologin noinherit", role
+
+
+def definer_functions() -> dict[str, str]:
+    """name -> full text, for every SECURITY DEFINER function."""
+    functions = re.findall(r"create function ([\w.]+)\((.*?)\$\$;", strip_comments(SQL), re.DOTALL)
+    return {name: body for name, body in functions if "security definer" in body}
+
+
+def test_security_definer_functions_exist_only_in_the_approved_migrations():
+    for path in [*MIGRATIONS[:5], MIGRATIONS[7]]:
+        assert "security definer" not in strip_comments(path.read_text()), path.name
+    names = set(definer_functions())
+    assert len(names) == 16
+    assert {n for n in names if n.startswith("growthpulse_secrets.")} == {
+        f"growthpulse_secrets.{n}"
+        for n in ("store_credential", "read_credentials", "delete_credentials",
+                  "mark_connection_needs_reauth", "credentials_needing_rotation")
+    }  # fmt: skip
+
+
+def test_each_definer_function_is_granted_to_exactly_one_restricted_role():
+    grants = re.findall(
+        r"grant execute on function ([\w.]+)\(.*?\)\s+to (\w+);", strip_comments(SQL), re.DOTALL
+    )
+    granted: dict[str, set[str]] = {}
+    for name, role in grants:
+        granted.setdefault(name, set()).add(role)
+    assert set(granted) == set(definer_functions())
+    for name, roles in granted.items():
+        expected = "growthpulse_token_manager" if "secrets" in name else "growthpulse_manager"
+        assert roles == {expected}, name
 
 
 def test_functions_pin_their_search_path():
-    functions = re.findall(r"create function .*?\$\$;", TABLES_SQL, re.DOTALL)
-    assert functions
+    functions = re.findall(r"create function .*?\$\$;", strip_comments(SQL), re.DOTALL)
+    assert len(functions) >= 20
     assert all("set search_path = ''" in function for function in functions)
 
 
-def test_views_never_expose_raw_payloads():
-    assert "raw_payload" not in strip_comments(VIEWS_SQL)
+def test_views_never_expose_raw_payloads_or_secret_material():
+    for sql in (VIEWS_SQL, GRANTS_SQL):
+        code = strip_comments(sql)
+        for column in ("raw_payload", "ciphertext", "nonce", "key_version", "provider_subject_id"):
+            assert column not in code, column
 
 
 def test_every_view_states_its_security_mode():
-    views = re.findall(r"create view growthpulse_read\.\w+ with \((.*?)\)", VIEWS_SQL)
-    assert len(views) == VIEWS_SQL.count("create view")
-    assert set(views) == {"security_invoker = false"}
+    for sql in (VIEWS_SQL, GRANTS_SQL):
+        views = re.findall(
+            r"create (?:or replace )?view growthpulse_read\.\w+\s+with \((.*?)\)", sql
+        )
+        assert len(views) == len(re.findall(r"create (?:or replace )?view", sql))
+        assert set(views) == {"security_invoker = false"}
 
 
 def test_rollback_script_is_kept_out_of_the_migrations_folder():
     rollbacks = list(ROLLBACK_DIR.glob("*.sql"))
-    assert rollbacks
+    assert {path.name for path in rollbacks} == {DROP_ALL.name, REVERT_M5.name}
     names = {path.name for path in MIGRATIONS}
     assert not names & {path.name for path in rollbacks}
 
 
-def rollback_statements() -> list[str]:
-    sql = strip_comments(next(ROLLBACK_DIR.glob("*.sql")).read_text())
+def rollback_statements(path: Path = DROP_ALL) -> list[str]:
+    sql = strip_comments(path.read_text())
     return [" ".join(s.split()) for s in sql.split(";") if s.strip()]
+
+
+def drop_targets(targets: str) -> list[str]:
+    """Split a drop list on top-level commas, keeping function argument lists whole."""
+    return [t.strip() for t in re.split(r",\s*(?![^()]*\))", targets)]
 
 
 def test_rollback_only_drops_growthpulse_objects_by_name():
@@ -254,11 +387,10 @@ def test_rollback_only_drops_growthpulse_objects_by_name():
         kind, targets = re.fullmatch(
             r"drop (view|schema|table|function|role) if exists (.+?)(?: restrict)?", statement
         ).groups()
-        for target in targets.split(", "):
-            assert re.fullmatch(r"growthpulse(_read)?(\.\w+(\(\))?)?|growthpulse_\w+", target), (
-                kind,
-                target,
-            )
+        for target in drop_targets(targets):
+            assert re.fullmatch(
+                r"growthpulse(_read|_secrets)?(\.\w+(\([\w ,]*\))?)?|growthpulse_\w+", target
+            ), (kind, target)
 
 
 def test_rollback_never_cascades():
@@ -272,13 +404,103 @@ def test_rollback_never_cascades():
 def test_rollback_drops_every_object_the_migrations_create():
     text = " ".join(rollback_statements())
     for table in table_columns():
-        assert f"growthpulse.{table}" in text
-    for view in re.findall(r"create view (growthpulse_read\.\w+)", VIEWS_SQL):
-        assert view in text
-    for function in re.findall(r"create function (growthpulse\.\w+\(\))", TABLES_SQL):
-        assert function in text
-    for role in re.findall(r"create role (\w+)", ACCESS_SQL):
+        assert f"growthpulse.{table}," in text or f"growthpulse.{table} restrict" in text, table
+    assert "growthpulse_secrets.oauth_credentials" in text
+    for view in re.findall(r"create view (growthpulse_read\.\w+)", SQL):
+        assert f"{view}," in text or f"{view} restrict" in text, view
+    for function in re.findall(r"create function ([\w.]+)\(", SQL):
+        assert f"{function}(" in text, function
+    for schema in re.findall(r"create schema (\w+);", SQL):
+        assert f"drop schema if exists {schema} restrict" in text
+    for role in re.findall(r"create role (\w+)", SQL):
         assert f"drop role if exists {role}" in text
+
+
+# The Milestone 5 revert script
+
+
+def test_revert_script_never_cascades_and_touches_only_growthpulse_objects():
+    statements = rollback_statements(REVERT_M5)
+    assert statements[0] == "begin" and statements[-1] == "commit"
+    assert not any("cascade" in s for s in statements)
+    for statement in statements:
+        if statement.startswith("drop ") and not statement.startswith("drop role"):
+            assert statement.endswith(" restrict"), statement[:60]
+        if statement.startswith(("drop table", "drop view", "drop function", "alter table")):
+            assert "growthpulse" in statement
+
+
+def test_revert_script_removes_everything_milestone_5_adds():
+    text = " ".join(rollback_statements(REVERT_M5))
+    m5 = "\n".join(path.read_text() for path in MIGRATIONS[3:])
+    for name in re.findall(r"create table growthpulse(?:_secrets)?\.(\w+)", m5):
+        assert f".{name}" in text, name
+    for function in re.findall(r"create function ([\w.]+)\(", m5):
+        assert f"{function}(" in text, function
+    for column in re.findall(r"add column (\w+)", strip_comments(SCOPE_SQL)):
+        assert f"drop column if exists {column} restrict" in text, column
+    for trigger in re.findall(r"create trigger (\w+)\s+before \w+(?: or \w+)? on growthpulse\.(?:"
+                              r"ad_performance_records|analytics_reports|findings|"
+                              r"experiment_proposals)", m5):  # fmt: skip
+        assert f"drop trigger if exists {trigger}" in text, trigger
+    for role in re.findall(r"create role (\w+)", m5):
+        assert f"drop role if exists {role}" in text
+
+
+def test_revert_script_recreates_the_milestone_4_views_verbatim():
+    revert = REVERT_M5.read_text()
+    replaced = re.findall(r"create or replace view (growthpulse_read\.\w+)", GRANTS_SQL)
+    assert len(replaced) == 8
+    for view in replaced:
+        original = re.search(rf"create view {re.escape(view)} with .*?;\n", VIEWS_SQL, re.DOTALL)
+        assert original and original.group(0) in revert, view
+
+
+# The Milestone 5 backfill
+
+
+def test_backfill_seeds_exactly_the_legacy_ids():
+    for value in (
+        LEGACY_WORKSPACE_ID,
+        LEGACY_CLIENT_ID,
+        LEGACY_GOOGLE_ACCOUNT_ID,
+        LEGACY_META_ACCOUNT_ID,
+    ):
+        assert str(value) in SCOPE_SQL
+    assert f"'{LEGACY_SYNTHETIC_CLIENT.name}'" in SCOPE_SQL
+    for platform, external_id in LEGACY_EXTERNAL_ACCOUNT_IDS.items():
+        assert f"'{platform.value}', '{external_id}', 'GBP', 'Europe/London'" in SCOPE_SQL
+    uuids = set(re.findall(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", SQL))
+    assert uuids == {
+        str(v)
+        for v in (
+            LEGACY_WORKSPACE_ID, LEGACY_CLIENT_ID, LEGACY_GOOGLE_ACCOUNT_ID, LEGACY_META_ACCOUNT_ID,
+        )
+    }  # fmt: skip
+
+
+def test_backfill_never_deletes_or_rewrites_history():
+    code = strip_comments(SCOPE_SQL)
+    assert "delete " not in code and "truncate" not in code
+    assert not re.search(r"update growthpulse\.(analytics_reports|experiment_proposals|"
+                         r"experiment_status_events|pipeline_runs)\b", code)  # fmt: skip
+    for statement in re.findall(
+        r"update growthpulse\.\w+ as \w+\s+set (.*?)\s+from", code, re.DOTALL
+    ):
+        assert statement.strip() == "ad_account_id = a.ad_account_id", statement
+    assert "disable trigger" not in code
+
+
+def test_backfill_preconditions_run_before_any_change():
+    code = strip_comments(SCOPE_SQL)
+    first_change = min(code.index(k) for k in ("insert into", "alter table", "update "))
+    assert code.index("raise exception 'Milestone 5 backfill refused") < first_change
+    for refusal in (
+        "non-synthetic rows",
+        "does not match a legacy account",
+        "duplicate record identities",
+    ):
+        assert refusal in code  # fmt: skip
 
 
 def test_each_migration_closes_the_schemas_it_creates():
@@ -293,7 +515,9 @@ def test_each_migration_closes_the_schemas_it_creates():
 def test_object_references_are_schema_qualified():
     sql = re.sub(r"'[^']*'", "''", strip_comments(SQL))
     keywords = {"schema", "all", "public", "true", "lateral", "role", "function", "tables"}
-    keywords |= {"sequences", "functions", "latest"}  # latest is a PL/pgSQL variable
+    keywords |= {"sequences", "functions", "latest", "conflict", "deleted", "credentials"}
+    keywords |= set(re.findall(r"\bas (\w+)", sql))  # table and subquery aliases
+    keywords |= {name for name in re.findall(r"\b([pv]_\w+)", sql)}  # arguments, variables
     references = re.findall(
         r"\b(?:table|view|from|join|references|on|into|function)\s+(?=([a-z_][\w.]*))", sql
     )
@@ -301,22 +525,33 @@ def test_object_references_are_schema_qualified():
     unqualified = {name for name in references if "." not in name and name not in keywords} - {
         "growthpulse",
         "growthpulse_read",
+        "growthpulse_secrets",
     }
     assert unqualified == set()
     for name in references:
         if "." in name:
-            assert name.split(".")[0] in {"growthpulse", "growthpulse_read", "pg_catalog"}, name
+            prefix = name.split(".")[0]
+            allowed = {"growthpulse", "growthpulse_read", "growthpulse_secrets", "pg_catalog"}
+            # Aliases (from "as x") and trigger records qualify columns, not schemas.
+            assert prefix in allowed or prefix in {"new", "old", "excluded"} | keywords, name
 
 
-def test_post_migration_checks_are_read_only():
-    path = PROJECT_ROOT / "supabase" / "verification" / "post_migration_checks.sql"
+VERIFICATION_DIR = PROJECT_ROOT / "supabase" / "verification"
+
+
+@pytest.mark.parametrize(
+    ("name", "statement_count"),
+    [("post_migration_checks.sql", 21), ("milestone_5_checks.sql", 13)],
+)
+def test_post_migration_checks_are_read_only(name: str, statement_count: int):
+    path = VERIFICATION_DIR / name
     # Privilege names such as 'CREATE' and separators such as '; ' appear only inside
     # string literals, so literals are blanked before splitting and checking.
     code = re.sub(r"'[^']*'", "''", strip_comments(path.read_text()).lower())
     statements = [" ".join(s.split()) for s in code.split(";") if s.strip()]
     assert statements[0] == "begin transaction read only"
     assert statements[-1] == "rollback"
-    assert len(statements) == 21
+    assert len(statements) == statement_count
     for statement in statements[1:-1]:
         assert statement.startswith(("select", "with")), statement[:40]
         assert not re.search(
@@ -330,16 +565,27 @@ def test_post_migration_checks_are_read_only():
             r"pg_cancel_backend|nextval|setval|current_setting|pg_reload_conf)\s*\(",
             statement,
         ), statement[:60]
-    # Password hashes and full setting values are never selected.
+    # Password hashes, secret material and full setting values are never selected.
     assert "rolpassword" not in code and "pg_authid" not in code
     assert "setconfig" not in code.replace("unnest(d.setconfig)", "")
+    assert not re.search(r"\b(ciphertext|nonce|read_credentials)\b", code)
 
 
-def test_post_migration_checks_share_one_result_shape():
-    path = PROJECT_ROOT / "supabase" / "verification" / "post_migration_checks.sql"
-    text = strip_comments(path.read_text())
+@pytest.mark.parametrize(
+    ("name", "count"), [("post_migration_checks.sql", 19), ("milestone_5_checks.sql", 11)]
+)
+def test_post_migration_checks_share_one_result_shape(name: str, count: int):
+    text = strip_comments((VERIFICATION_DIR / name).read_text())
     checks = re.findall(r"select '(\d\d) [a-z ]+' as check_name", text)
-    assert checks == [f"{n:02d}" for n in range(1, 20)]
+    assert checks == [f"{n:02d}" for n in range(1, count + 1)]
+
+
+def test_milestone_5_checks_expect_exactly_the_legacy_backfill():
+    text = (VERIFICATION_DIR / "milestone_5_checks.sql").read_text()
+    for value in (LEGACY_CLIENT_ID, LEGACY_GOOGLE_ACCOUNT_ID, LEGACY_META_ACCOUNT_ID):
+        assert str(value) in text
+    for path in MIGRATIONS:
+        assert f"('{path.name[:14]}')" in text
 
 
 def test_supabase_cli_files_hold_no_secrets():

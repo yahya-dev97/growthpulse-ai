@@ -12,6 +12,7 @@ import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date
+from uuid import uuid4
 
 import psycopg
 import pytest
@@ -21,9 +22,11 @@ from psycopg import sql
 from pydantic import SecretStr
 
 from factories import make_row
+from growthpulse_ai.accounts.legacy import LEGACY_SYNTHETIC_CLIENT
+from growthpulse_ai.analytics.report import build_report
 from growthpulse_ai.config import PROJECT_ROOT
 from growthpulse_ai.connectors.synthetic import SyntheticConnector
-from growthpulse_ai.connectors.synthetic_data import generate_synthetic_rows
+from growthpulse_ai.connectors.synthetic_data import SYNTHETIC_CLIENTS, generate_synthetic_rows
 from growthpulse_ai.persistence import connection_check, provision_roles, read, store
 from growthpulse_ai.persistence.connection import (
     BACKEND_ROLE,
@@ -32,13 +35,18 @@ from growthpulse_ai.persistence.connection import (
     secure_conninfo,
 )
 from growthpulse_ai.persistence.errors import DatabaseUnavailableError
+from growthpulse_ai.persistence.load import load_records
 from growthpulse_ai.persistence.store import ExperimentProposal, record_experiment_proposal
+from growthpulse_ai.pipeline.client_analysis import analyse_client
 from growthpulse_ai.pipeline.persisted_run import PipelineRunError, run_and_persist
+from growthpulse_ai.pipeline.sample_report import build_sample_report
 from growthpulse_ai.schema import DataSource
+from multi_client import CLIENTS, sync_client
+from pg_seed import register_account, seed_legacy_client, seed_synthetic_client, start_client_run
 
 TEST_URL = os.environ.get("GROWTHPULSE_TEST_DATABASE_URL", "")
 MIGRATIONS = sorted((PROJECT_ROOT / "supabase" / "migrations").glob("*.sql"))
-ROLLBACK = next((PROJECT_ROOT / "supabase" / "rollback").glob("*.sql"))
+ROLLBACK = PROJECT_ROOT / "supabase" / "rollback" / "20261111100000_drop_growthpulse.sql"
 API_ROLES = ("anon", "authenticated", "service_role")
 OWNER = "growthpulse_test_owner"
 START, END = date(2026, 10, 1), date(2026, 10, 30)
@@ -76,9 +84,9 @@ def owner() -> psycopg.Connection:
     return connection
 
 
-def apply_migrations() -> None:
+def apply_migrations(paths: list | None = None) -> None:
     with owner() as connection:
-        for path in MIGRATIONS:
+        for path in MIGRATIONS if paths is None else paths:
             # One transaction per file, as the Supabase CLI applies them.
             with connection.transaction():
                 connection.execute(path.read_text())
@@ -145,6 +153,8 @@ def empty_tables() -> None:
                 sql.SQL(", ").join(sql.Identifier("growthpulse", t) for (t,) in tables)
             )
         )
+        connection.execute("truncate growthpulse_secrets.oauth_credentials")
+        seed_legacy_client(connection)
 
 
 def run(connector: SyntheticConnector | None = None):
@@ -170,7 +180,11 @@ def test_every_table_has_row_level_security_enabled():
             where n.nspname = 'growthpulse' and c.relkind = 'r'
             """
         ).fetchall()
-    assert len(rows) == 7
+    created = re.findall(
+        r"create table growthpulse\.(\w+)", "".join(path.read_text() for path in MIGRATIONS)
+    )
+    assert {name for name, _ in rows} == set(created)
+    assert len(rows) == 16
     assert all(enabled for _, enabled in rows)
 
 
@@ -439,6 +453,8 @@ def test_delivery_view_counts_each_campaign_day_once():
         for day in range(1, 31)
         for extra in ({}, {"conversion_definition": second_event})
     ]
+    with admin() as connection:
+        register_account(connection, "synthetic-account")
     run(SyntheticConnector(rows=rows))
     assert scalar("select count(*) from growthpulse.ad_performance_records") == 60
     assert scalar("select count(*) from growthpulse_read.campaign_daily_delivery") == 30
@@ -460,6 +476,8 @@ def test_database_refuses_raw_payloads_for_live_data():
 
 
 def test_largest_values_the_schema_accepts_are_stored_exactly():
+    with admin() as connection:
+        register_account(connection, "synthetic-account")
     largest = "99999999999999.999999"
     rows = [
         make_row(reporting_date=f"2026-10-{day:02d}", spend=largest, conversion_value=largest)
@@ -619,6 +637,19 @@ def test_owner_can_enable_login_but_not_grant_elevated_attributes():
 
 
 CHECKS = PROJECT_ROOT / "supabase" / "verification" / "post_migration_checks.sql"
+M4_MIGRATIONS = MIGRATIONS[:3]
+
+
+@contextmanager
+def milestone_4_only() -> Iterator[None]:
+    """The Milestone 4 verification script describes the state after migrations 1-3."""
+    run_rollback()
+    apply_migrations(M4_MIGRATIONS)
+    try:
+        yield
+    finally:
+        run_rollback()
+        apply_migrations()
 
 
 def run_verification() -> list[tuple]:
@@ -630,7 +661,8 @@ def run_verification() -> list[tuple]:
             "create table if not exists supabase_migrations.schema_migrations "
             "(version text primary key, statements text[], name text)"
         )
-        for path in MIGRATIONS:
+        connection.execute("truncate supabase_migrations.schema_migrations")
+        for path in M4_MIGRATIONS:
             version, name = path.stem.split("_", 1)
             connection.execute(
                 "insert into supabase_migrations.schema_migrations (version, name) "
@@ -650,7 +682,8 @@ def run_verification() -> list[tuple]:
 
 
 def test_post_migration_checks_pass_on_the_tested_schema():
-    rows = run_verification()
+    with milestone_4_only():
+        rows = run_verification()
     assert len({row[0] for row in rows}) >= 17
     for check, item, expected, actual, ok in rows:
         if check in {"02 schemas", "04 ownership"}:
@@ -674,15 +707,16 @@ def test_post_migration_checks_run_in_a_read_only_transaction():
 
 
 def test_post_migration_checks_detect_drift():
-    with admin() as connection:
-        connection.execute("grant select on growthpulse.findings to anon")
-        connection.execute("create table growthpulse.extra_table (id int)")
-    try:
-        failing = {(check, item) for check, item, *_, ok in run_verification() if ok is False}
-    finally:
+    with milestone_4_only():
         with admin() as connection:
-            connection.execute("drop table growthpulse.extra_table")
-            connection.execute("revoke select on growthpulse.findings from anon")
+            connection.execute("grant select on growthpulse.findings to anon")
+            connection.execute("create table growthpulse.extra_table (id int)")
+        try:
+            failing = {(c, item) for c, item, *_, ok in run_verification() if ok is False}
+        finally:
+            with admin() as connection:
+                connection.execute("drop table growthpulse.extra_table")
+                connection.execute("revoke select on growthpulse.findings from anon")
     assert ("09 grants", "grants that were not expected") in failing
     assert ("03 objects", "unexpected objects") in failing
     assert ("03 objects", "tables") in failing
@@ -706,8 +740,43 @@ def test_connection_check_passes_for_both_roles():
         dashboard = connection_check.check_dashboard(connection)
     failures = [name for name, ok in [*backend, *dashboard] if not ok]
     assert failures == []
-    assert len(backend) == 6 + len(connection_check.TABLES) + 1
-    assert len(dashboard) == 4 + len(connection_check.VIEWS) + 1
+    refused, isolation = len(connection_check.WRITER_REFUSED_TABLES), 3
+    assert len(backend) == 6 + len(connection_check.TABLES) + refused + isolation + 1
+    assert len(dashboard) == 4 + len(connection_check.VIEWS) + isolation + 1
+
+
+@pytest.mark.parametrize(
+    ("grant", "failing_check"),
+    [
+        ("grant usage on schema growthpulse_secrets to {role}", "cannot use growthpulse_secrets"),
+        (
+            "grant execute on function growthpulse_secrets.read_credentials(uuid) to {role}",
+            "cannot run token functions",
+        ),
+        (
+            "grant execute on function growthpulse.create_client(uuid, text, text) to {role}",
+            "cannot run owner actions",
+        ),
+    ],
+)
+@pytest.mark.parametrize("role", [BACKEND_ROLE, DASHBOARD_ROLE])
+def test_connection_check_detects_token_or_owner_access(role, grant, failing_check):
+    revoke = grant.replace("grant ", "revoke ").replace(" to {role}", " from {role}")
+    with owner() as connection:
+        connection.execute(grant.format(role=role))
+    try:
+        check = (
+            connection_check.check_backend
+            if role == BACKEND_ROLE
+            else connection_check.check_dashboard
+        )
+        with as_role(role) as connection:
+            results = dict(check(connection))
+    finally:
+        with owner() as connection:
+            connection.execute(revoke.format(role=role))
+    label = "writer" if role == BACKEND_ROLE else "dashboard"
+    assert results[f"{label}: {failing_check}"] is False
 
 
 def test_connection_check_detects_privilege_drift():
@@ -1027,3 +1096,97 @@ def test_rollback_removes_everything_and_migrations_reapply():
     assert remaining == 0
     apply_migrations()
     assert scalar("select count(*) from growthpulse.pipeline_runs") == 0
+
+
+# Milestone 5: analysis from stored records
+
+
+def load_as_writer(accounts, timezone: str = "UTC", start: date = START, end: date = END):
+    with writer() as connection:
+        # A non-UTC session must not change data_as_of or any report value.
+        connection.execute(sql.SQL("set timezone = {}").format(sql.Literal(timezone)))
+        return load_records(
+            connection, data_source=DataSource.SYNTHETIC, accounts=accounts, start=start, end=end
+        )
+
+
+@pytest.mark.parametrize("timezone", ["UTC", "Pacific/Chatham", "America/St_Johns"])
+def test_stored_milestone_4_records_rebuild_the_same_report(timezone: str):
+    outcome = run()  # the unchanged Milestone 4 combined run
+    loaded = load_as_writer(LEGACY_SYNTHETIC_CLIENT.accounts, timezone)
+    source = SyntheticConnector().fetch(START, END).records
+    assert sorted(r.model_dump_json() for r in loaded) == sorted(
+        r.model_dump_json() for r in source
+    )
+    _, summaries = sync_client(LEGACY_SYNTHETIC_CLIENT)
+    analysis = analyse_client(LEGACY_SYNTHETIC_CLIENT, loaded, summaries)
+    assert analysis.report["report_id"] == outcome.report_id
+    assert analysis.report == build_sample_report()
+
+
+def store_client(client, rows) -> str:
+    """Store a non-legacy client's rows through the Milestone 4 store, in a run of its own."""
+    run_id = uuid4()
+    with admin() as connection:
+        start_client_run(connection, run_id, client.client_id)
+    result = SyntheticConnector(rows=rows).fetch(START, END)
+    report = build_report(result.records, data_quality=result.summary)
+    with writer() as connection:
+        store.save_run_results(
+            connection, run_id, data_source=DataSource.SYNTHETIC, connector="synthetic",
+            records=result.records, quarantined=result.quarantined, report=report,
+        )  # fmt: skip
+    return report["report_id"]
+
+
+def test_loader_returns_only_the_requested_accounts_and_dates():
+    ireland = CLIENTS[1]
+    with admin() as connection:
+        seed_synthetic_client(connection, ireland)
+    run()
+    store_client(ireland, generate_synthetic_rows(client=SYNTHETIC_CLIENTS[1]))
+    loaded = load_as_writer(ireland.accounts, start=date(2026, 10, 5), end=date(2026, 10, 9))
+    assert {(r.platform, r.account_id) for r in loaded} == {
+        (a.platform, a.external_account_id) for a in ireland.accounts
+    }
+    assert {r.reporting_date for r in loaded} == {date(2026, 10, d) for d in range(5, 10)}
+    assert len(loaded) == 5 * 5  # five campaigns, five days
+    assert load_as_writer(()) == []
+
+
+def test_loaded_records_keep_the_largest_values_exactly():
+    with admin() as connection:
+        register_account(connection, "synthetic-account")
+    largest = "99999999999999.999999"
+    rows = [
+        make_row(reporting_date=f"2026-10-{day:02d}", spend=largest, conversion_value=largest)
+        for day in range(1, 31)
+    ]
+    run(SyntheticConnector(rows=rows))
+    account = LEGACY_SYNTHETIC_CLIENT.accounts[0]
+    probe = type(account)(
+        ad_account_id=account.ad_account_id,
+        client_id=account.client_id,
+        data_source=DataSource.SYNTHETIC,
+        platform=account.platform,
+        external_account_id="synthetic-account",
+        currency="GBP",
+        timezone="Europe/London",
+    )
+    loaded = load_as_writer([probe])
+    assert len(loaded) == 30
+    assert {str(r.spend) for r in loaded} == {largest}
+
+
+def test_loader_refuses_reversed_dates_and_other_data_sources():
+    with writer() as connection:
+        with pytest.raises(ValueError, match="start"):
+            load_records(
+                connection, data_source=DataSource.SYNTHETIC, accounts=(),
+                start=END, end=START,
+            )  # fmt: skip
+        with pytest.raises(ValueError, match="data source"):
+            load_records(
+                connection, data_source=DataSource.LIVE,
+                accounts=LEGACY_SYNTHETIC_CLIENT.accounts, start=START, end=END,
+            )  # fmt: skip

@@ -24,6 +24,14 @@ LIVE_DATA_REQUIRED_FIELDS = (
     "meta_ad_account_id",
 )
 
+LEGACY_ACCOUNT_SETTINGS = (
+    "google_ads_refresh_token",
+    "google_ads_customer_id",
+    "google_ads_login_customer_id",
+    "meta_access_token",
+    "meta_ad_account_id",
+)
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -47,15 +55,40 @@ class Settings(BaseSettings):
     database_url: SecretStr | None = None
     dashboard_database_url: SecretStr | None = None
 
+    # Versioned AES-256-GCM key ring for stored OAuth tokens, "1:<base64url>,2:<...>".
+    # Never stored in the database. Both settings are set together, or neither.
+    token_encryption_keys: SecretStr | None = None
+    token_encryption_active_version: int | None = None
+
+    # App-level Google Ads credentials. These identify the app, not an advertiser.
     google_ads_developer_token: SecretStr | None = None
     google_ads_client_id: str | None = None
     google_ads_client_secret: SecretStr | None = None
+
+    # Legacy single-account settings (Milestones 1-4). Accounts and tokens now come from
+    # per-account OAuth connections (Milestone 6). Kept, unused by the multi-account path,
+    # until that path is proven; then removed. See LEGACY_ACCOUNT_SETTINGS.
     google_ads_refresh_token: SecretStr | None = None
     google_ads_customer_id: str | None = None
     google_ads_login_customer_id: str | None = None
-
     meta_access_token: SecretStr | None = None
     meta_ad_account_id: str | None = None
+
+    @property
+    def legacy_account_settings_in_use(self) -> tuple[str, ...]:
+        """Names of legacy single-account settings that are set, for a deprecation notice."""
+        return tuple(
+            name.upper() for name in LEGACY_ACCOUNT_SETTINGS if getattr(self, name) is not None
+        )
+
+    @model_validator(mode="after")
+    def _require_complete_key_ring(self) -> Self:
+        keys_set = self.token_encryption_keys is not None
+        if keys_set != (self.token_encryption_active_version is not None):
+            raise ValueError(
+                "TOKEN_ENCRYPTION_KEYS and TOKEN_ENCRYPTION_ACTIVE_VERSION must be set together"
+            )
+        return self
 
     @model_validator(mode="after")
     def _require_live_credentials(self) -> Self:

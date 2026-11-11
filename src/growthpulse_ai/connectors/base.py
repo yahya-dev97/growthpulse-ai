@@ -11,6 +11,7 @@ from collections.abc import Iterable
 from datetime import date
 from typing import Any, ClassVar
 
+from growthpulse_ai.accounts.models import AccountContext
 from growthpulse_ai.data_quality import ValidationResult, validate_rows
 from growthpulse_ai.schema import DataSource
 
@@ -29,6 +30,13 @@ class ConnectorError(Exception):
 class AdDataConnector(ABC):
     name: ClassVar[str]
     data_source: ClassVar[DataSource]
+    # Set for a per-account sync. Rows naming any other account are then quarantined.
+    account: AccountContext | None = None
+
+    def _bind_account(self, account: AccountContext | None) -> None:
+        if account is not None and account.data_source is not self.data_source:
+            raise ValueError("The account's data source does not match this connector")
+        self.account = account
 
     @abstractmethod
     def _fetch_raw(self, start_date: date, end_date: date) -> Iterable[Any]:
@@ -46,7 +54,14 @@ class AdDataConnector(ABC):
                 self.name, f"Could not read source ({type(error).__name__})"
             ) from None
 
-        result = validate_rows(raw_rows, expected_source=self.data_source)
+        expected_account = (
+            None
+            if self.account is None
+            else (self.account.platform, self.account.external_account_id)
+        )
+        result = validate_rows(
+            raw_rows, expected_source=self.data_source, expected_account=expected_account
+        )
         summary = result.summary
         logger.info(
             "connector=%s total_rows=%d valid_records=%d quarantined_rows=%d warnings=%d",

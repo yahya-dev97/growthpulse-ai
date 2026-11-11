@@ -97,3 +97,20 @@ def test_env_example_contains_no_secret_values():
     for name, field in Settings.model_fields.items():
         if field.annotation == SecretStr | None:
             assert example[name.upper()] == "", f"{name.upper()} must be blank in .env.example"
+
+
+def test_token_key_ring_settings_are_set_together():
+    with pytest.raises(ValueError, match="set together"):
+        Settings(_env_file=None, token_encryption_keys="1:abc")
+    with pytest.raises(ValueError, match="set together"):
+        Settings(_env_file=None, token_encryption_active_version=1)
+    settings = Settings(
+        _env_file=None, token_encryption_keys="1:abc", token_encryption_active_version=1
+    )
+    assert "abc" not in repr(settings)
+
+
+def test_legacy_single_account_settings_are_reported():
+    assert Settings(_env_file=None).legacy_account_settings_in_use == ()
+    settings = Settings(_env_file=None, meta_ad_account_id="act_1")
+    assert settings.legacy_account_settings_in_use == ("META_AD_ACCOUNT_ID",)

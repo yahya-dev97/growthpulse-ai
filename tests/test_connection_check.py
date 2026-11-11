@@ -4,7 +4,12 @@ import pytest
 
 from growthpulse_ai.config import PROJECT_ROOT, Settings
 from growthpulse_ai.persistence import connection_check
-from growthpulse_ai.persistence.connection_check import TABLES, VIEWS, check_tls
+from growthpulse_ai.persistence.connection_check import (
+    TABLES,
+    VIEWS,
+    WRITER_REFUSED_TABLES,
+    check_tls,
+)
 
 MIGRATIONS = sorted((PROJECT_ROOT / "supabase" / "migrations").glob("*.sql"))
 
@@ -55,7 +60,10 @@ def test_tls_is_judged_on_the_client_side(ssl, minimum, compiled, expected):
 
 def test_checked_tables_and_views_match_the_migrations():
     sql = "\n".join(path.read_text() for path in MIGRATIONS)
-    assert set(TABLES) == set(re.findall(r"create table growthpulse\.(\w+)", sql))
+    assert set(TABLES) | set(WRITER_REFUSED_TABLES) == set(
+        re.findall(r"create table growthpulse\.(\w+)", sql)
+    )
+    assert not set(TABLES) & set(WRITER_REFUSED_TABLES)
     assert set(VIEWS) == set(re.findall(r"create view growthpulse_read\.(\w+)", sql))
 
 

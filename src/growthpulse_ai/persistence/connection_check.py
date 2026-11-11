@@ -19,6 +19,7 @@ from growthpulse_ai.config import get_settings
 from growthpulse_ai.persistence.connection import connect_backend, connect_dashboard
 from growthpulse_ai.persistence.errors import PersistenceError
 
+# Tables the writer reads. Milestone 5 tables need its migrations applied first.
 TABLES = (
     "pipeline_runs",
     "ad_performance_records",
@@ -27,7 +28,17 @@ TABLES = (
     "findings",
     "experiment_proposals",
     "experiment_status_events",
+    "workspaces",
+    "clients",
+    "provider_connections",
+    "discovered_ad_accounts",
+    "ad_accounts",
+    "account_sync_config",
+    "account_sync_state",
+    "analytics_report_breakdowns",
 )
+# Owner-only: the writer must be refused.
+WRITER_REFUSED_TABLES = ("owner_action_log",)
 VIEWS = (
     "pipeline_runs",
     "campaign_daily_conversions",
@@ -38,7 +49,23 @@ VIEWS = (
     "data_quality_issues",
     "experiment_proposals",
     "experiment_status_history",
+    "latest_client_reports",
+    "report_breakdowns",
+    "clients",
+    "ad_accounts",
+    "provider_connections",
+    "discovered_ad_accounts",
+    "account_sync_status",
+    "owner_actions",
 )
+# Executable SECURITY DEFINER functions in a schema, read from the catalog so no schema
+# USAGE is needed. The count must be positive, so a database without them cannot pass.
+DEFINER_ACCESS = """
+select count(*) > 0 and not coalesce(bool_or(has_function_privilege(p.oid, 'EXECUTE')), false)
+from pg_catalog.pg_proc as p
+join pg_catalog.pg_namespace as n on n.oid = p.pronamespace
+where n.nspname = %s and p.prosecdef
+"""
 
 Result = tuple[str, bool]
 
@@ -131,7 +158,33 @@ def _backend_checks(connection: psycopg.Connection, cursor: psycopg.Cursor) -> l
         (f"writer: can read growthpulse.{table}", _can_select(connection, "growthpulse", table))
         for table in TABLES
     ]
+    results += [
+        (
+            f"writer: refused when reading growthpulse.{table}",
+            not _can_select(connection, "growthpulse", table),
+        )
+        for table in WRITER_REFUSED_TABLES
+    ]
+    results += _no_token_or_owner_access(cursor, "writer")
     return results
+
+
+def _no_token_or_owner_access(cursor: psycopg.Cursor, label: str) -> list[Result]:
+    """Neither app role may reach encrypted tokens or run an owner action."""
+    return [
+        (
+            f"{label}: cannot use growthpulse_secrets",
+            _scalar(cursor, "select has_schema_privilege('growthpulse_secrets', 'USAGE')") is False,
+        ),
+        (
+            f"{label}: cannot run token functions",
+            cursor.execute(DEFINER_ACCESS, ("growthpulse_secrets",)).fetchone()[0] is True,
+        ),
+        (
+            f"{label}: cannot run owner actions",
+            cursor.execute(DEFINER_ACCESS, ("growthpulse",)).fetchone()[0] is True,
+        ),
+    ]
 
 
 def _dashboard_checks(connection: psycopg.Connection, cursor: psycopg.Cursor) -> list[Result]:
@@ -160,6 +213,7 @@ def _dashboard_checks(connection: psycopg.Connection, cursor: psycopg.Cursor) ->
         )
         for view in VIEWS
     ]
+    results += _no_token_or_owner_access(cursor, "dashboard")
     return results
 
 

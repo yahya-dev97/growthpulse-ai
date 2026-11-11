@@ -212,7 +212,7 @@ When rows in a group disagree, no single row can be trusted, so the whole group 
 
 ## Future Google and Meta API mapping
 
-Planned for Milestone 8, and to be verified against the API versions current at that time.
+Planned for Milestone 6, and to be verified against the API versions current at that time.
 
 | Field | Google Ads (GAQL) | Meta Marketing API (Insights) |
 |---|---|---|
@@ -395,7 +395,8 @@ Integration tests apply the migrations to a throwaway PostgreSQL server and are 
 | 2 | Normalized data schema and synthetic data connector | Complete |
 | 3 | KPI calculation and anomaly detection | Complete |
 | 4 | Supabase schema and persistence layer | Complete: migrations applied, synthetic runs persisted |
-| 5 | AI insights and experiment recommendations | Planned |
-| 6 | Streamlit dashboard | Planned |
-| 7 | Scheduled pipeline on GitHub Actions | Planned |
-| 8 | Read-only Google Ads and Meta connectors, deployment | Planned |
+| 5 | Multi-client and multi-ad-account architecture ([design](MILESTONE_5_DESIGN.md)) | In progress: Phases A and B complete locally; not yet applied to Supabase |
+| 6 | OAuth and read-only Google Ads and Meta integrations | Planned |
+| 7 | AI insights and experiment recommendations | Planned |
+| 8 | Streamlit dashboard | Planned |
+| 9 | Scheduled pipeline on GitHub Actions, deployment | Planned |

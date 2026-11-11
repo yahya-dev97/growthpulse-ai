@@ -202,14 +202,130 @@ SCENARIOS = (
 )
 
 
+CAMPAIGNS_BY_KEY = {spec.key: spec for spec in CAMPAIGNS}
+
+
+@dataclass(frozen=True, slots=True)
+class SyntheticAccountSpec:
+    """One fictional advertising account and the campaigns it runs."""
+
+    platform: Platform
+    account_id: str
+    currency: str
+    timezone: str
+    campaign_keys: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SyntheticClientSpec:
+    """One fictional client: its accounts, seed and planted scenarios."""
+
+    key: str
+    name: str
+    seed: int
+    accounts: tuple[SyntheticAccountSpec, ...]
+    scenarios: tuple[SyntheticScenario, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.name.endswith("(fictional)"):
+            raise ValueError("Synthetic client names must be marked (fictional)")
+        keys = [key for account in self.accounts for key in account.campaign_keys]
+        if len(keys) != len(set(keys)):
+            raise ValueError("A campaign may belong to only one account of a client")
+        for account in self.accounts:
+            if not account.account_id.startswith("synthetic-"):
+                raise ValueError("Synthetic account IDs must start with synthetic-")
+            for key in account.campaign_keys:
+                if key not in CAMPAIGNS_BY_KEY:
+                    raise ValueError("Unknown synthetic campaign")
+                if CAMPAIGNS_BY_KEY[key].platform is not account.platform:
+                    raise ValueError("A campaign must run on its account's platform")
+        if len({(a.platform, a.account_id) for a in self.accounts}) != len(self.accounts):
+            raise ValueError("Account IDs must be unique within a client")
+        if any(scenario.campaign_key not in keys for scenario in self.scenarios):
+            raise ValueError("A scenario must name one of the client's campaigns")
+
+    def account_for_campaign(self, campaign_key: str) -> SyntheticAccountSpec | None:
+        for account in self.accounts:
+            if campaign_key in account.campaign_keys:
+                return account
+        return None
+
+
+def _platform_keys(platform: Platform) -> tuple[str, ...]:
+    return tuple(spec.key for spec in CAMPAIGNS if spec.platform is platform)
+
+
+# Milestones 2-4 data, unchanged: same seed, accounts, campaigns and scenarios.
+DEFAULT_CLIENT = SyntheticClientSpec(
+    key="examplescan-uk",
+    name=BUSINESS_NAME,
+    seed=DEFAULT_SEED,
+    accounts=tuple(
+        SyntheticAccountSpec(platform, ACCOUNT_IDS[platform], CURRENCY, TIMEZONE, keys)
+        for platform, keys in ((G, _platform_keys(G)), (M, _platform_keys(M)))
+    ),
+    scenarios=SCENARIOS,
+)
+
+# Further fictional clients, for multi-client and isolation tests. One reuses campaign IDs
+# from the default client on different accounts; one mixes currencies and timezones.
+SYNTHETIC_CLIENTS = (
+    DEFAULT_CLIENT,
+    SyntheticClientSpec(
+        key="exampleclinic-ie",
+        name="ExampleClinic Ireland (fictional)",
+        seed=20261002,
+        accounts=(
+            SyntheticAccountSpec(
+                G, "synthetic-google-account-002", "EUR", "Europe/Dublin",
+                ("gs-ct-national", "gs-mri-brand", "pmax-mri-national"),
+            ),
+            SyntheticAccountSpec(
+                M, "synthetic-meta-account-002", "EUR", "Europe/Dublin",
+                ("meta-mri-prospecting", "meta-ultrasound-retargeting"),
+            ),
+        ),
+        scenarios=(
+            SyntheticScenario(
+                "pmax-mri-national", ScenarioKind.CONVERSION_RATE_DECLINE, start_day=16,
+                end_day=29, ramp_days=4, cvr_multiplier=0.45,
+                description="Conversion rate falls while CPC and spend hold steady.",
+            ),
+        ),
+    ),
+    SyntheticClientSpec(
+        key="examplescan-eu",
+        name="ExampleScan Europe (fictional)",
+        seed=20261003,
+        accounts=(
+            SyntheticAccountSpec(
+                G, "synthetic-google-account-003", "GBP", "Europe/London",
+                ("gs-mri-london", "gs-ultrasound-manchester"),
+            ),
+            SyntheticAccountSpec(
+                G, "synthetic-google-account-004", "EUR", "Europe/Berlin",
+                ("pmax-ct-national", "pmax-ultrasound-north"),
+            ),
+            SyntheticAccountSpec(
+                M, "synthetic-meta-account-003", "USD", "America/New_York",
+                ("meta-ct-prospecting",),
+            ),
+        ),
+    ),
+)  # fmt: skip
+
+
 def _normal(rng: random.Random) -> float:
     """Approximate a standard normal draw, using only ``rng.random()``."""
     return sum(rng.random() for _ in range(12)) - 6.0
 
 
-def _scenario_multipliers(campaign_key: str, day: int) -> tuple[float, float]:
+def _scenario_multipliers(
+    campaign_key: str, day: int, scenarios: tuple[SyntheticScenario, ...] = SCENARIOS
+) -> tuple[float, float]:
     cpc_multiplier = cvr_multiplier = 1.0
-    for scenario in SCENARIOS:
+    for scenario in scenarios:
         if scenario.campaign_key == campaign_key and scenario.start_day <= day <= scenario.end_day:
             progress = min(1.0, (day - scenario.start_day + 1) / scenario.ramp_days)
             cpc_multiplier *= 1 + (scenario.cpc_multiplier - 1) * progress
@@ -218,7 +334,13 @@ def _scenario_multipliers(campaign_key: str, day: int) -> tuple[float, float]:
 
 
 def _campaign_rows(
-    spec: CampaignSpec, seed: int, start_date: date, days: int, ingested_at: str
+    spec: CampaignSpec,
+    seed: int,
+    start_date: date,
+    days: int,
+    ingested_at: str,
+    account: SyntheticAccountSpec,
+    scenarios: tuple[SyntheticScenario, ...],
 ) -> list[dict[str, Any]]:
     # Seeding per campaign means adding a campaign leaves the others unchanged.
     rng = random.Random(f"{seed}:{spec.key}")  # noqa: S311 - simulation, not security
@@ -228,7 +350,7 @@ def _campaign_rows(
         reporting_date = start_date + timedelta(days=day)
         cpc_drift = 0.7 * cpc_drift + 0.03 * _normal(rng)
         cvr_drift = 0.7 * cvr_drift + 0.04 * _normal(rng)
-        cpc_multiplier, cvr_multiplier = _scenario_multipliers(spec.key, day)
+        cpc_multiplier, cvr_multiplier = _scenario_multipliers(spec.key, day, scenarios)
 
         weekday_factor = WEEKDAY_FACTORS[spec.platform][reporting_date.weekday()]
         spend = round(spec.daily_spend * weekday_factor * (1 + 0.07 * _normal(rng)), 2)
@@ -247,7 +369,7 @@ def _campaign_rows(
             {
                 "reporting_date": reporting_date.isoformat(),
                 "platform": spec.platform.value,
-                "account_id": ACCOUNT_IDS[spec.platform],
+                "account_id": account.account_id,
                 "campaign_id": spec.campaign_id,
                 "campaign_name": f"[SYNTHETIC] {spec.label}",
                 "campaign_type": spec.campaign_type.value,
@@ -256,8 +378,8 @@ def _campaign_rows(
                 "spend": f"{spend:.2f}",
                 "conversions": f"{conversions:.2f}",
                 "conversion_value": f"{value:.2f}",
-                "currency": CURRENCY,
-                "account_timezone": TIMEZONE,
+                "currency": account.currency,
+                "account_timezone": account.timezone,
                 "conversion_definition": dict(CONVERSION_DEFINITIONS[spec.conversion]),
                 "attribution": dict(ATTRIBUTION[spec.platform]),
                 "data_source": DataSource.SYNTHETIC.value,
@@ -268,19 +390,29 @@ def _campaign_rows(
 
 
 def generate_synthetic_rows(
-    seed: int = DEFAULT_SEED,
+    seed: int | None = None,
     start_date: date = DEFAULT_START_DATE,
     days: int = DEFAULT_DAYS,
+    client: SyntheticClientSpec = DEFAULT_CLIENT,
 ) -> list[dict[str, Any]]:
-    """Return raw rows for every campaign and day. The same arguments give the same rows."""
+    """Return raw rows for every campaign and day of one fictional client.
+
+    The same arguments give the same rows. The defaults reproduce the Milestone 2-4
+    dataset exactly. ``seed`` defaults to the client's own seed.
+    """
     if days < 1:
         raise ValueError("days must be at least 1")
+    seed = client.seed if seed is None else seed
     # Derived from the dates, not the clock, so output never depends on when it runs.
     ingested_at = datetime.combine(
         start_date + timedelta(days=days), time(6), tzinfo=UTC
     ).isoformat()
-    return [
-        row
-        for spec in CAMPAIGNS
-        for row in _campaign_rows(spec, seed, start_date, days, ingested_at)
-    ]
+    rows = []
+    # Catalogue order, so the default client's rows come out exactly as before.
+    for spec in CAMPAIGNS:
+        account = client.account_for_campaign(spec.key)
+        if account is not None:
+            rows.extend(
+                _campaign_rows(spec, seed, start_date, days, ingested_at, account, client.scenarios)
+            )
+    return rows
