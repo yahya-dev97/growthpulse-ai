@@ -2,7 +2,7 @@
 
 An AI-powered performance marketing analysis platform. GrowthPulse ingests Google Ads and Meta Ads performance data, calculates marketing KPIs, detects anomalies, uses the Anthropic API to generate evidence-backed insights and experiment recommendations, stores the results in Supabase PostgreSQL, and displays them in a Streamlit dashboard.
 
-> **Status: Milestone 2 (normalized data and synthetic connector).** KPI calculation and AI analysis do not exist yet. See the [roadmap](#milestone-roadmap).
+> **Status: Milestone 3 (KPI analytics and anomaly detection).** AI analysis, persistence, and the dashboard do not exist yet. See the [roadmap](#milestone-roadmap).
 
 ## Goals
 
@@ -51,10 +51,18 @@ growthpulse-ai/
 │   │   ├── synthetic.py        # synthetic connector
 │   │   └── synthetic_data.py   # deterministic dataset generator
 │   ├── analytics/
+│   │   ├── periods.py          # date ranges and comparisons
+│   │   ├── kpis.py             # KPI formulas and aggregation guards
+│   │   ├── noise.py            # conversion-count noise guard
+│   │   ├── anomalies.py        # configurable rules and findings
+│   │   ├── trends.py           # finding groups and persistence
+│   │   └── report.py           # JSON-compatible report
 │   ├── ai_analysis/
 │   ├── persistence/
 │   ├── pipeline/
+│   │   └── sample_report.py    # local end-to-end flow
 │   └── dashboard/
+├── docs/samples/               # generated sample report
 ├── tests/
 ├── .env.example
 ├── pyproject.toml
@@ -130,6 +138,8 @@ These three measures are different, and only the first exists in this schema:
 Spend divided by `conversions` is therefore **cost per platform-attributed conversion**, a proxy that should not be reported as CAC.
 
 Google and Meta conversions are not directly comparable. They can differ in the event tracked, the funnel stage, the attribution model, the lookback windows, view-through credit, and the date a conversion is reported against.
+
+The analytics engine enforces this by naming outcome metrics `platform_attributed_*`, reporting them per conversion basis, and setting `true_cac_available` to `false` in every report.
 
 ## Synthetic data assumptions
 
@@ -222,13 +232,150 @@ Planned for Milestone 8, and to be verified against the API versions current at 
 
 Two points will shape those connectors. Google does not return impressions, clicks, or cost when a query is segmented by conversion action, so delivery and conversion queries must be joined. Meta restricts some lower-funnel event sharing for health-related advertisers, so the events available for a medical business must be confirmed first.
 
+## KPI formulas
+
+| KPI | Formula | Undefined (null) when |
+|---|---|---|
+| Spend, impressions, clicks | Sum, once per `delivery_key` | Never |
+| CTR | clicks ÷ impressions | Impressions are zero |
+| CPC | spend ÷ clicks | Clicks are zero |
+| Platform-attributed conversions | Sum within one conversion basis | Never |
+| Platform-attributed conversion rate | conversions ÷ clicks | Clicks are zero |
+| Cost per platform-attributed conversion (**proxy, not true CAC**) | spend ÷ conversions | Conversions are zero |
+| Platform-attributed conversion value | Sum within one conversion basis | Never |
+| Platform-attributed ROAS | conversion value ÷ spend | Spend is zero |
+| Absolute change | current − baseline | Either value is null |
+| Percent change | (current − baseline) ÷ baseline × 100 | Baseline is zero or null |
+
+Rates are fractions, so `0.05` means 5%. Percent changes are in percent, so `25` means +25%. Money uses `Decimal` throughout, and a zero conversion rate is a real `0`, distinct from an undefined `null`.
+
+## Aggregation rules
+
+- Delivery metrics are summed once per `delivery_key`, never once per conversion-event row.
+- Conversions are never totalled across conversion bases. Results are always a list per basis, and no combined figure exists.
+- Each basis calculates cost and ROAS only from the spend of the rows reporting that basis.
+- An aggregate cannot span two currencies or mix synthetic and live data. Portfolios are per currency.
+- Reporting dates stay in each account's timezone and are never converted.
+- Conflicting delivery metrics or duplicate records stop the run with an error, rather than choosing a value.
+
+Compared periods must be complete, non-overlapping, and equal in length. A day is complete only when data was ingested after that day ended in the account's timezone. The default report covers the full range, the latest 7 days against the previous 7, and the latest 10 days against the first 10.
+
+## Anomaly thresholds
+
+Rules compare one campaign on one conversion basis across two periods. All thresholds are fields of `AnomalyThresholds` and can be overridden. Findings state what changed and do not claim causes or statistical significance.
+
+| Rule | Fires when | High severity at |
+|---|---|---|
+| `cost_per_conversion_increase` | Cost rises ≥ 25% and ≥ 5 in absolute terms, with ≥ 3 current conversions | ≥ 50% |
+| `conversion_rate_decline` | Rate falls ≥ 20% | ≥ 40% |
+| `spend_without_conversion_growth` | Spend rises ≥ 20% and conversion growth is under half of spend growth | Gap ≥ 40 points |
+| `roas_deterioration` | ROAS falls ≥ 25%, with baseline value ≥ 500 | ≥ 50% |
+| `spend_with_zero_conversions` | ≥ 3 consecutive days of spend with no conversions, run spend ≥ 200, and ≥ 3 conversions expected at baseline cost | ≥ 5 days |
+| `strong_performer` | Cost ≤ 60% of peer median, ROAS ≥ 125% of peer median, ≥ 20 conversions, ≥ 3 same-basis peers, own cost not up more than 10% | Always `info` |
+
+The first four rules, and peers for `strong_performer`, also need spend ≥ 100 and clicks ≥ 100 in both periods and ≥ 10 baseline conversions. Monetary thresholds are in the account's currency and are not converted.
+
+Campaigns that cannot be compared are listed in `exclusions` with a reason: incomplete coverage, a conversion basis not present in both periods, unavailable attribution, or insufficient volume.
+
+### Noise guard
+
+The cost, conversion-rate, and ROAS rules also apply a guard, after their own thresholds and volume minimums. A change clears it when:
+
+```text
+|ln(current / baseline)|  >=  width × √(1/B + 1/C)
+```
+
+B and C are the platform-attributed conversion counts in the two periods. Default width is 1.5 (`noise_guard_width`). High severity needs a wider 2.0 (`noise_guard_high_severity_width`).
+
+| Outcome | Meaning |
+|---|---|
+| `passed` | Clears the band and keeps its severity |
+| `downgraded` | A high-severity change clears 1.5 but not 2.0, so it becomes medium. `pre_guard_severity` keeps the original |
+| `suppressed` | Inside the band. Moved to `suppressed_findings` with all evidence intact |
+| `not_evaluated` | A zero value or count leaves the log undefined, so the finding is left unchanged |
+| `not_applicable` | The rule is not guarded |
+
+Assumptions: conversion counts behave roughly like independent Poisson counts, spend and clicks are treated as fixed, and conversion-value variability is ignored, which makes the ROAS band optimistic. **This is a heuristic. It is not a statistical significance test or a confidence interval**, and it implies no p-value or coverage. Platform-attributed conversions are not verified customers or bookings. Setting both widths to 0 disables the guard.
+
+### Comparison windows
+
+Each comparison has a `purpose` and is reported separately. Metrics from different windows are never combined.
+
+- `recent_change`: latest 7 days against the previous 7.
+- `sustained_change`: latest 10 days against the first 10, with the window length configurable.
+
+`persistence_assessments` connects them. Each sustained deterioration is checked against the latest window, because a change that levelled off produces no recent finding but has not gone away.
+
+| Status | Meaning |
+|---|---|
+| `recent_change_continuing` | The recent comparison also flags it |
+| `plateaued_still_elevated` | No recent finding, but the latest window is still beyond the threshold and noise guard against the longer baseline |
+| `not_confirmed_elevated` | The latest window does not clear both checks |
+| `not_assessable` | The latest window has gaps or an undefined metric |
+
+`resolution_confirmed` is always `false`, because this data cannot show that an issue has been fixed.
+
+### Related findings
+
+`finding_groups` links active adverse findings in the same campaign, conversion basis, and window whose metrics share an input, such as spend or conversions. Each original finding stays in place with its evidence. Metrics that share inputs can move together arithmetically, so a group does not establish that one caused another.
+
+## Analytics report
+
+Run the local flow, from synthetic connector through to the report:
+
+```bash
+uv run python -m growthpulse_ai.pipeline.sample_report
+```
+
+This writes [docs/samples/synthetic_analytics_report.json](docs/samples/synthetic_analytics_report.json). The report is deterministic, contains no clock reading, and holds unformatted values, with decimals as strings to preserve precision. `report_id` and each `finding_id` are stable for later upserts. An abridged finding:
+
+```json
+{
+  "finding_id": "1438d8f36e01b8a95910befd948a875b51acf32b6a31bf4618b889e0d5cfe782",
+  "rule_id": "cost_per_conversion_increase",
+  "severity": "high",
+  "platform": "google_ads",
+  "campaign_id": "synthetic-gs-mri-london",
+  "metric": "cost_per_platform_attributed_conversion",
+  "metric_label": "Cost per platform-attributed conversion (proxy, not true CAC)",
+  "baseline_value": "52.76971731",
+  "current_value": "108.87786653",
+  "absolute_change": "56.10814922",
+  "percent_change": "106.32641613",
+  "baseline_period": { "start": "2026-10-01", "end": "2026-10-10" },
+  "current_period": { "start": "2026-10-21", "end": "2026-10-30" },
+  "evidence": { "baseline_conversions": "77.47", "current_conversions": "38.81" },
+  "pre_guard_severity": "high",
+  "noise_guard": {
+    "outcome": "passed",
+    "log_ratio_magnitude": "0.72428927",
+    "band": "0.29498856",
+    "high_severity_band": "0.39331808"
+  },
+  "data_limitations": [
+    "This is a threshold rule. No statistical significance test was performed.",
+    "The data shows that this changed. It does not establish why."
+  ]
+}
+```
+
+## Known limitations
+
+- Rules and the noise guard involve no statistical test, so ordinary sampling variation can still trigger them. Across 200 synthetic seeds, 6.9% to 7.2% of campaigns with no planted anomaly received at least one active adverse finding. These rates describe this generator and do not predict real-world accuracy.
+- The guard reduces sensitivity at low volumes, most of all in 7-day windows.
+- A comparison only sees change between its two windows. Persistence assessments cover plateaus only where a longer comparison exists.
+- Recent days can be restated as late conversions arrive, so the latest period may be understated.
+- `conversion_rate` divides by clicks, so view-through credit can inflate it on Meta.
+- Live connectors must emit zero-conversion rows, or days without conversions will look like missing data.
+- Findings describe platform-reported data and do not establish incrementality.
+
 ## Milestone roadmap
 
 | # | Milestone | Status |
 |---|---|---|
 | 1 | Project foundation: tooling, configuration, tests | Complete |
 | 2 | Normalized data schema and synthetic data connector | Complete |
-| 3 | KPI calculation and anomaly detection | Planned |
+| 3 | KPI calculation and anomaly detection | Complete |
 | 4 | Supabase schema and persistence layer | Planned |
 | 5 | AI insights and experiment recommendations | Planned |
 | 6 | Streamlit dashboard | Planned |

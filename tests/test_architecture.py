@@ -72,3 +72,13 @@ def test_checker_covers_shared_modules(tmp_path: Path):
     (tmp_path / "schema.py").write_text("from growthpulse_ai.connectors import base\n")
 
     assert find_violations(tmp_path)
+
+
+def test_analytics_depends_only_on_the_schema():
+    """Records are the only contract, so new data sources need no analytics changes."""
+    allowed = {"analytics", "schema"}
+    for path in (PACKAGE_DIR / "analytics").rglob("*.py"):
+        for module in imported_modules(path, PACKAGE_DIR):
+            parts = module.split(".")
+            if parts[0] == ROOT_PACKAGE and len(parts) > 1:
+                assert parts[1] in allowed, f"{path.name} imports {module}"

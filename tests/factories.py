@@ -1,6 +1,9 @@
 """Builders for raw test rows."""
 
+from datetime import date, timedelta
 from typing import Any
+
+from growthpulse_ai.schema import AdPerformanceRecord
 
 
 def make_row(**overrides: Any) -> dict[str, Any]:
@@ -56,3 +59,19 @@ def make_meta_row(**overrides: Any) -> dict[str, Any]:
         },
     }
     return make_row(**{**meta, **overrides})
+
+
+def make_record(**overrides: Any) -> AdPerformanceRecord:
+    return AdPerformanceRecord.model_validate(make_row(**overrides))
+
+
+def make_meta_record(**overrides: Any) -> AdPerformanceRecord:
+    return AdPerformanceRecord.model_validate(make_meta_row(**overrides))
+
+
+def make_days(start: date, days: int, **overrides: Any) -> list[AdPerformanceRecord]:
+    """Return one record per consecutive day, each with the same metrics."""
+    return [
+        make_record(reporting_date=(start + timedelta(days=offset)).isoformat(), **overrides)
+        for offset in range(days)
+    ]
