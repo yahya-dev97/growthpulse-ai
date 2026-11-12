@@ -20,6 +20,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from ..config import Settings, get_settings
+from .audit import RejectionAudit
 from .evidence import EvidenceError, build_evidence_package
 from .fallback import deterministic_response
 from .ledger import LedgerError, SpendLedger
@@ -132,7 +133,11 @@ def main(
             provider = MockProvider(payload=lambda _request: deterministic_response(package))
             print("Mock mode: offline, no API call, no charge.")
         artifact = generate_insights(
-            report, provider, config, ledger=ledger if provider.live else None
+            report,
+            provider,
+            config,
+            ledger=ledger if provider.live else None,
+            audit=RejectionAudit.from_settings(settings),
         )
     except (GateError, EvidenceError, LedgerError) as error:
         print(f"Blocked: {error}", file=sys.stderr)
@@ -143,8 +148,24 @@ def main(
     cost = artifact["cost"]
     estimated = cost["estimated_usd"]
     print(f"Outcome: {artifact['outcome']}. Cost: {cost['status']}, estimated ${estimated}")
+    # Checks, paths, numbers and classifications only: never the rejected text itself.
     for violation in artifact["validation"]["violations"][:10]:
         print(f"  rejected: {violation['check']} at {violation['path']}: {violation['detail']}")
+        diagnostic = violation.get("diagnostic")
+        if diagnostic:
+            how = diagnostic.get("transformation")
+            print(
+                f"    value {diagnostic['value']}: {diagnostic['classification']}"
+                + (f" ({how})" if how else "")
+            )
+    audit_record = artifact.get("rejection_audit")
+    if audit_record:
+        where = settings.ai_rejection_audit_dir
+        print(
+            f"Rejected response saved for review: {where}/{audit_record['audit_id']}.json"
+            if audit_record["saved"]
+            else f"Rejected response not saved ({audit_record['reason']})"
+        )
     if cost["ledger_after"]:
         ledger_view = cost["ledger_after"]
         print(

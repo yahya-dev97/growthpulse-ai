@@ -117,7 +117,7 @@ def test_the_evidence_package_is_deterministic_and_matches_the_dashboard_report(
 
 def test_the_package_holds_only_report_values(report, package):
     source = {f["finding_id"]: f for c in report["comparisons"] for f in c["findings"]}
-    for finding in package.content["findings"]:
+    for finding in package.ordered_findings:
         original = source[finding["finding_id"]]
         for key in ("baseline_value", "current_value", "percent_change", "evidence", "currency"):
             assert finding[key] == original[key]

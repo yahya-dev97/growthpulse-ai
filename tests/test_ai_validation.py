@@ -41,7 +41,7 @@ def checks_failed(raw, package) -> set[str]:
 
 
 def two_findings(package, *, same_currency=True, same_basis=False) -> tuple[dict, dict]:
-    findings = package.content["findings"]
+    findings = package.ordered_findings
     for first in findings:
         for second in findings:
             if first is second:
@@ -66,7 +66,7 @@ def test_the_deterministic_response_passes_every_check(package, response):
 
 
 def test_rounded_evidence_values_and_rates_as_percentages_are_supported(package, response):
-    finding = package.content["findings"][0]
+    finding = package.ordered_findings[0]
     value = Decimal(finding["current_value"])
     response["observed_facts"][0]["statement"] = (
         f"The current value is {value:.2f}, or {value:.1f} at one decimal place."
@@ -155,7 +155,7 @@ def test_a_number_from_an_uncited_finding_is_rejected(package, response):
 
 
 def test_derived_figures_are_rejected(package, response):
-    finding = package.content["findings"][0]
+    finding = package.ordered_findings[0]
     baseline = Decimal(finding["evidence"]["baseline_spend"])
     current = Decimal(finding["evidence"]["current_spend"])
     response["observed_facts"][0] = {
@@ -219,7 +219,7 @@ def test_experiment_with_the_wrong_attribution_basis_is_rejected(package, respon
     baseline = package.findings[experiment["baseline_finding_id"]]
     other = next(
         f
-        for f in package.content["findings"]
+        for f in package.ordered_findings
         if f["conversion_basis"]["basis_id"] != baseline["conversion_basis"]["basis_id"]
     )
     experiment["attribution_basis_id"] = other["conversion_basis"]["basis_id"]
@@ -241,8 +241,8 @@ def test_items_mixing_currencies_are_rejected(report):
     findings = [f for c in mixed["comparisons"] for f in c["findings"]]
     findings[-1]["currency"] = "EUR"
     package = build_evidence_package(mixed)
-    eur = next(f for f in package.content["findings"] if f["currency"] == "EUR")
-    gbp = next(f for f in package.content["findings"] if f["currency"] == "GBP")
+    eur = next(f for f in package.ordered_findings if f["currency"] == "EUR")
+    gbp = next(f for f in package.ordered_findings if f["currency"] == "GBP")
     raw = deterministic_response(package)
     raw["observed_facts"][0] = {
         "statement": "Two findings in different currencies.",
@@ -255,14 +255,14 @@ def test_baseline_must_be_a_cited_finding_with_the_target_metric(package, respon
     first, second = two_findings(package)
     experiment = response["experiments"][0]
     cited = experiment["finding_ids"][0]
-    outsider = next(f for f in package.content["findings"] if f["finding_id"] != cited)
+    outsider = next(f for f in package.ordered_findings if f["finding_id"] != cited)
     experiment["baseline_finding_id"] = outsider["finding_id"]
     assert "experiment_baseline_cited" in checks_failed(response, package)
 
     response2 = copy.deepcopy(deterministic_response(package))
     baseline = package.findings[response2["experiments"][0]["baseline_finding_id"]]
     other_metric = next(
-        f["metric"] for f in package.content["findings"] if f["metric"] != baseline["metric"]
+        f["metric"] for f in package.ordered_findings if f["metric"] != baseline["metric"]
     )
     response2["experiments"][0]["target_metric"] = other_metric
     assert "experiment_target_metric_matches" in checks_failed(response2, package)

@@ -64,6 +64,11 @@ class Settings(BaseSettings):
     ai_ledger_path: Path = PROJECT_ROOT / "data" / "ai_spend_ledger.jsonl"
     ai_max_output_tokens: int = Field(default=10_000, ge=1_024, le=16_000)
     ai_request_timeout_seconds: float = Field(default=300.0, ge=10.0, le=600.0)
+    # Owner-only local copies of AI responses that failed validation, for review. "auto"
+    # enables it only for APP_ENV=local outside CI. Never read by the app or the dashboard.
+    ai_rejection_audit: Literal["auto", "enabled", "disabled"] = "auto"
+    ai_rejection_audit_dir: Path = PROJECT_ROOT / "data" / "ai_rejections"
+    ai_rejection_audit_retention_days: int = Field(default=14, ge=1, le=90)
 
     # Backend read/write connection, and a separate read-only one for the dashboard.
     database_url: SecretStr | None = None

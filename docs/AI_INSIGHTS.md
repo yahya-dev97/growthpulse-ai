@@ -1,6 +1,6 @@
 # AI insights: architecture, safeguards and costs
 
-**Status (12 Nov 2026): implemented and tested offline. No live Claude call has been made.** Everything AI-related in the repository today is produced by an offline mock provider or a deterministic fallback, and is labelled that way. The first paid call needs the project owner's approval (see [A controlled live test](#a-controlled-live-test)).
+**Status (12 Nov 2026): implemented and tested offline. One approved live call has been made, and its response was rejected by validation.** Everything AI-related on the dashboard is produced by an offline mock provider or a deterministic fallback, and is labelled that way. See [Live test record](#live-test-record). Each further paid call needs the project owner's approval.
 
 ## What it does
 
@@ -25,7 +25,7 @@ report ─► evidence package ─► provider (mock | Claude) ─► JSON ─�
 
 | Module (`src/growthpulse_ai/ai_analysis/`) | Role |
 |---|---|
-| `evidence.py` | Copies finding IDs, values, periods, conversion bases, currencies and limitations from the report, verbatim. It never recomputes anything and never modifies the report. The package ID is the SHA-256 of its canonical JSON |
+| `evidence.py` | Copies finding IDs, values, periods, conversion bases, currencies and limitations from the report, verbatim. The one derived value is each comparison window's length in days, counted from the report's own dates. It never modifies the report. Shared values (conversion bases, comparison windows, extra limitations) are stated once in lookup tables (schema 1.1). The package ID is the SHA-256 of its canonical JSON |
 | `prompt.py` | The versioned system prompt (`PROMPT_VERSION`). Its rules mirror the validator's checks one for one |
 | `schema.py` | Pydantic models (strict, `extra="forbid"`, length and count limits), plus the structured-output JSON schema. The schema's enums are built from the package, so the model can only name finding IDs, metrics, bases and currencies that exist |
 | `validation.py` | The 15 checks. All or nothing |
@@ -33,6 +33,7 @@ report ─► evidence package ─► provider (mock | Claude) ─► JSON ─�
 | `providers.py` | `MockProvider` (offline) and `AnthropicProvider` (official SDK) |
 | `pricing.py` | Versioned price table, maximum-cost bound, and cost from reported usage |
 | `ledger.py` | Local spend ledger with the $1.00 cap |
+| `audit.py` | Optional local, owner-only copies of rejected responses for review. Write-only for the application |
 | `service.py` | The orchestration, the artifact format, re-validation and the dashboard block |
 | `__main__.py` | The CLI |
 
@@ -46,7 +47,7 @@ The checks are listed in `CHECKS`. Any violation rejects the whole response, rec
 |---|---|
 | `schema` | Strict types, required fields, no extra fields, length and count limits, `duration_days` 7–42, `requires_human_approval` exactly `true` |
 | `finding_ids_exist` | Every cited ID is in the package. Each item cites one to six |
-| `numbers_supported` | Every number in prose is a value from the evidence of the findings *that item cites*, rounded no further than written. One significant figure must match exactly. Rates may be written as percentages. Derived figures (differences, totals, projections) are rejected |
+| `numbers_supported` | Every number in prose is a value from the evidence of the findings *that item cites*, rounded no further than written. That includes their comparison window lengths and attribution windows. One significant figure must match exactly. Rates may be written as percentages. Derived figures (differences, totals, projections) are rejected |
 | `dates_supported` | ISO dates must come from the cited findings' periods or evidence |
 | `identifiers_known` | No hex IDs or `synthetic-…` identifiers outside the package |
 | `campaigns_known_and_cited` | Campaign names must exist in the package and belong to a cited finding |
@@ -59,6 +60,29 @@ The checks are listed in `CHECKS`. Any violation rejects the whole response, rec
 | `facts_state_no_causes` | Facts contain no causal language ("due to", "driven by", and similar) |
 | `no_execution_claims` | Nothing is described as applied, launched, paused, approved or live |
 | `no_duplicates` | No repeated statement, proposal or citation |
+
+**Diagnostics.** Each rejected number records:
+- the cited finding IDs and the JSON path;
+- the number as written;
+- up to five nearest cited evidence values, with their finding and field.
+
+Each rejection also gets one classification:
+
+| Classification | Meaning |
+|---|---|
+| `missing_evidence` | The item cites no known finding |
+| `incorrect_finding_linkage` | The value is in an uncited finding's evidence. Those findings are listed |
+| `numerical_transformation` | The value can be derived from the cited evidence but isn't stated in it. The derivation is named (a date fragment, rounding to one significant figure, ×100 or ÷100, a difference, sum, ratio or percent change) and its operands listed. A derived match must be exact or written to three significant figures, so small integers aren't misattributed by chance |
+| `unsupported_invention` | Nothing matches |
+
+Diagnostics run only after a number has been rejected, so they never change what is accepted. They contain numbers and evidence references, never the statement's text, so they're safe to print and to store in an artifact.
+
+**Rejection audit.** Every artifact discards a rejected response. With the audit enabled, the response is first written to `data/ai_rejections/` (gitignored) for review. Its protections:
+- **Owner-only:** the directory is 0700, and each file is 0600, created exclusively and never overwritten.
+- **Minimal:** it holds the response, the violations, provenance IDs and the stop reason. It never holds the key, headers or prompt, and key-shaped strings are redacted.
+- **Pruned** after `AI_REJECTION_AUDIT_RETENTION_DAYS`.
+- **Default:** `auto` enables it only for `APP_ENV=local` outside CI. The CI workflow sets `APP_ENV=ci`.
+- **Never read back:** nothing in the application reads it. The dashboard builder reads only `docs/samples/ai_insights/` and re-validates what it finds, so an audited response can't bypass validation. The CLI prints diagnostics, never the rejected text.
 
 The model never states the experiment baseline as a number. It names a finding and either `current_value` or `baseline_value`, and the value shown comes from the evidence. Durations live in a structured field, not in prose. Attribution and platform limits come from the package, not from the model, so they're always shown.
 
@@ -87,7 +111,7 @@ max cost          = (max input × $5/MTok + max_tokens × $20/MTok) × 1.10
 - Thinking is billed as output and counts toward `max_tokens`.
 - The 1.10 factor allows for price modifiers such as regional inference.
 
-For the sample report the maximum is 37,189 input + 10,000 output tokens = **$0.424540**.
+For the sample report the maximum is 31,411 input + 10,000 output tokens = **$0.392761**. It was 37,189 tokens and $0.424540 before the package de-duplication in schema 1.1.
 
 **Ledger** (`data/ai_spend_ledger.jsonl`, gitignored). This is an append-only JSON Lines file, read and written under an exclusive `flock`, so concurrent threads and processes see each other.
 
@@ -152,6 +176,9 @@ The dashboard never runs inference. It shows a pre-generated artifact from `docs
 | `AI_LEDGER_PATH` | `data/ai_spend_ledger.jsonl` | Gitignored |
 | `AI_MAX_OUTPUT_TOKENS` | `10000` | 1,024–16,000. Bounds the maximum cost |
 | `AI_REQUEST_TIMEOUT_SECONDS` | `300` | 10–600 |
+| `AI_REJECTION_AUDIT` | `auto` | `auto` means local development outside CI only. `enabled` or `disabled` override it |
+| `AI_REJECTION_AUDIT_DIR` | `data/ai_rejections/` | Gitignored |
+| `AI_REJECTION_AUDIT_RETENTION_DAYS` | `14` | 1–90 |
 
 ## Commands
 
@@ -175,7 +202,7 @@ Exit codes: `0` means validated, `2` means blocked before any call, and `3` mean
 
 ## A controlled live test
 
-**Not yet run. It needs the project owner's approval first.** It makes one request, with no retries, at a maximum of **$0.424540**. A realistic estimate is about $0.05–0.15, because the byte bound overstates input tokens roughly threefold.
+**Each run needs the project owner's approval.** It makes one request, with no retries, at a maximum of **$0.392761**. The first run cost an estimated $0.202444. Most of that was output: 6,984 tokens including thinking, against 15,691 input tokens.
 
 1. Check the prices in `pricing.py` against the pricing page.
 2. Put the key in the environment of one shell only, typed at a hidden prompt so it stays out of shell history and logs:
@@ -192,12 +219,24 @@ Exit codes: `0` means validated, `2` means blocked before any call, and `3` mean
    ```bash
    uv run python -m growthpulse_ai.ai_analysis generate \
      --report docs/samples/synthetic_analytics_report.json \
-     --out tmp/live_artifact.json --live --confirm-max-cost 0.43
+     --out tmp/live_artifact.json --live --confirm-max-cost 0.40
    ```
 5. Run `unset ANTHROPIC_API_KEY AI_LIVE_CALLS_ENABLED`. Then compare the ledger's estimate with the Anthropic Console's usage page: they're expected to differ slightly, and neither is assumed to equal the other.
 6. Review the artifact.
    - If the outcome is `validated` and the content is acceptable, move it to `docs/samples/ai_insights/<report_id>.json`, then regenerate the dashboard data.
    - If the outcome is `fallback`, the reasons are listed, and nothing reaches the dashboard.
+
+## Live test record
+
+| | First live test, 12 Nov 2026 |
+|---|---|
+| Request | One `claude-opus-5-5` request on the synthetic sample report, no retries. Message `msg_011CgyJbJd92Q9pR8AwZXToL` |
+| Prices | Checked against Anthropic's pricing and models pages on the day. They matched `2026-11-12.1` |
+| Usage | 15,691 input + 6,984 output tokens. No cache tokens and no price modifiers |
+| Estimated cost | $0.202444 (reserved $0.424540). The ledger holds $0.202444 committed of $1.00 |
+| Validation | Rejected. `numbers_supported` failed twice at `observed_facts[5].statement`, and the other 14 checks passed. The fallback was used and nothing was published |
+| Raw response | Discarded. The rejection audit didn't exist yet |
+| Likely cause | Found offline: the comparison window lengths ("the latest 10 days versus the first 10 days") weren't in the evidence, so they failed twice in one statement. They are evidence from schema 1.1 on. `tests/test_ai_diagnostics.py` reproduces this. It's a hypothesis, because the response itself wasn't kept |
 
 ## Limitations
 
@@ -206,7 +245,7 @@ Exit codes: `0` means validated, `2` means blocked before any call, and `3` mean
   - Spelled-out numbers ("two weeks") aren't caught.
   - A causal claim phrased without the listed words could pass as a fact.
   - Campaign detection relies on the `Platform | Product | Market` naming convention.
-- **Unproven against a live model.** The validator hasn't been tried on real Claude output. The first live response may legitimately fall back, for example over a number written at one significant figure. Prompt and validator changes then need a new `PROMPT_VERSION`.
+- **One live response so far, and it was rejected.** The fix for its likely cause has been verified only offline. Prompt and validator changes need a new `PROMPT_VERSION`.
 - **Loose input bound.** The byte-count bound makes reservations about three times the likely input cost. That is safe, but uses budget headroom: two held requests would exhaust $1.00.
 - **Stale reservations.** A reservation left open by a crash stays counted forever. There's no tool to resolve it, by design, and editing the ledger is a manual, reviewed act.
 - **POSIX only.** The ledger is local to one machine and needs POSIX `flock`. It isn't shared between machines or CI.

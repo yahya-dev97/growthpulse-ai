@@ -78,9 +78,15 @@ class Violation:
     check: str
     path: str
     detail: str
+    # Structured detail for numbers_supported. Numbers and evidence references only, never
+    # the statement's text, so it is safe to print and to store in an artifact.
+    diagnostic: dict | None = None
 
-    def as_dict(self) -> dict[str, str]:
-        return {"check": self.check, "path": self.path, "detail": self.detail}
+    def as_dict(self) -> dict:
+        result = {"check": self.check, "path": self.path, "detail": self.detail}
+        if self.diagnostic is not None:
+            result["diagnostic"] = self.diagnostic
+        return result
 
 
 @dataclass(frozen=True)
@@ -107,24 +113,48 @@ def _is_rate(metric: str) -> bool:
     return "rate" in metric or metric == "ctr"
 
 
-def finding_numbers(finding: dict) -> set[Decimal]:
-    """Every value a statement citing this finding may quote."""
+@dataclass(frozen=True)
+class EvidenceValue:
+    """One quotable number: its absolute value and where in the evidence it comes from."""
+
+    value: Decimal
+    finding_id: str
+    field: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {"value": str(self.value), "finding_id": self.finding_id, "field": self.field}
+
+
+def finding_values(finding: dict) -> list[EvidenceValue]:
+    """Every value a statement citing this finding may quote, labelled by source field."""
+    basis = finding["conversion_basis"]
     raw = [
-        finding.get("baseline_value"),
-        finding.get("current_value"),
-        finding.get("percent_change"),
-        finding.get("absolute_change"),
-        finding["conversion_basis"].get("click_window_days"),
-        finding["conversion_basis"].get("view_window_days"),
-        *finding.get("evidence", {}).values(),
+        ("baseline_value", finding.get("baseline_value")),
+        ("current_value", finding.get("current_value")),
+        ("percent_change", finding.get("percent_change")),
+        ("absolute_change", finding.get("absolute_change")),
+        ("baseline_days", finding.get("baseline_days")),
+        ("current_days", finding.get("current_days")),
+        ("conversion_basis.click_window_days", basis.get("click_window_days")),
+        ("conversion_basis.view_window_days", basis.get("view_window_days")),
+        *((f"evidence.{key}", value) for key, value in finding.get("evidence", {}).items()),
     ]
-    values = {number for number in map(_decimal, raw) if number is not None}
     if _is_rate(finding["metric"]):
         for key in ("baseline_value", "current_value", "absolute_change"):
             number = _decimal(finding.get(key))
             if number is not None:
-                values.add(number * 100)
+                raw.append((f"{key} as a percentage", number * 100))
+    values = []
+    for field, value in raw:
+        number = _decimal(value)
+        if number is not None:
+            values.append(EvidenceValue(number, finding["finding_id"], field))
     return values
+
+
+def finding_numbers(finding: dict) -> set[Decimal]:
+    """Every value a statement citing this finding may quote."""
+    return {item.value for item in finding_values(finding)}
 
 
 def finding_dates(finding: dict) -> set[str]:
@@ -146,13 +176,138 @@ def _significant_digits(digits: str) -> int:
     return len(digits.replace(".", "").lstrip("0"))
 
 
-def number_is_supported(written: str, decimals: str | None, allowed: set[Decimal]) -> bool:
+def _written(written: str, decimals: str | None) -> tuple[Decimal, Decimal]:
+    """The written number and half a unit of its last written digit."""
     text = written.replace(",", "") + (f".{decimals}" if decimals else "")
-    value = Decimal(text)
-    if _significant_digits(text) < 2:
+    return Decimal(text), Decimal(5) * Decimal(10) ** -(len(decimals or "") + 1)
+
+
+def number_is_supported(written: str, decimals: str | None, allowed: set[Decimal]) -> bool:
+    value, half_unit = _written(written, decimals)
+    if _significant_digits(str(value)) < 2:
         return value in allowed
-    half_unit = Decimal(5) * Decimal(10) ** -(len(decimals or "") + 1)
     return any(abs(candidate - value) <= half_unit for candidate in allowed)
+
+
+# --- diagnostics for an unsupported number ----------------------------------------------
+#
+# Diagnosis never changes acceptance: it runs only after a number has been rejected, and
+# explains the most likely reason, in this order:
+#   missing_evidence           the item cites no known finding, so nothing can support it
+#   incorrect_finding_linkage  the value is in the evidence of a finding the item didn't cite
+#   numerical_transformation   the value can be derived from the cited evidence (a date
+#                              fragment, coarser rounding, a scale change, or a difference,
+#                              sum, ratio or percent change of two values), but isn't stated
+#   unsupported_invention      none of the above
+
+MAX_NEAREST = 5
+
+
+def _nearest(value: Decimal, candidates: list[EvidenceValue]) -> list[dict]:
+    def distance(item: EvidenceValue) -> Decimal:
+        return abs(item.value - value) / max(abs(value), Decimal(1))
+
+    return [item.as_dict() for item in sorted(candidates, key=distance)[:MAX_NEAREST]]
+
+
+def _transformations(cited: list[EvidenceValue]) -> list[tuple[str, Decimal, list[EvidenceValue]]]:
+    derived = []
+    for item in cited:
+        derived.append(("multiplied by 100", item.value * 100, [item]))
+        derived.append(("divided by 100", item.value / 100, [item]))
+    for i, first in enumerate(cited):
+        for second in cited[i + 1 :]:
+            if first.value == second.value:
+                continue
+            derived.append(("difference", abs(first.value - second.value), [first, second]))
+            derived.append(("sum", first.value + second.value, [first, second]))
+            for a, b in ((first, second), (second, first)):
+                if b.value:
+                    derived.append(("ratio", a.value / b.value, [a, b]))
+                    derived.append(("ratio as a percentage", a.value / b.value * 100, [a, b]))
+                    derived.append(
+                        ("percent change", abs(a.value - b.value) / b.value * 100, [b, a])
+                    )
+    return derived
+
+
+def diagnose_number(
+    written: str,
+    decimals: str | None,
+    cited: list[dict],
+    all_findings: dict[str, dict],
+) -> dict:
+    value, half_unit = _written(written, decimals)
+    shown = written + (f".{decimals}" if decimals else "")
+    cited_ids = [f["finding_id"] for f in cited]
+    cited_values = [item for f in cited for item in finding_values(f)]
+    diagnostic: dict = {
+        "value": shown,
+        "cited_finding_ids": cited_ids,
+        "nearest_cited_values": _nearest(value, cited_values),
+    }
+    if not cited:
+        return diagnostic | {
+            "classification": "missing_evidence",
+            "explanation": "the item cites no known finding, so no number in it can be supported",
+        }
+
+    def close(candidate: Decimal) -> bool:
+        return abs(candidate - value) <= half_unit
+
+    # Day-of-month and year only: a bare month number is rarely how dates are written.
+    dates = sorted({d for f in cited for d in finding_dates(f)})
+    for iso in dates:
+        year, _, day = iso.split("-")
+        if not decimals and value in (Decimal(year), Decimal(day)):
+            return diagnostic | {
+                "classification": "numerical_transformation",
+                "transformation": "date fragment",
+                "explanation": f"matches part of the cited date {iso}; dates must be written in "
+                "full ISO form",
+            }
+
+    uncited_values = [
+        item
+        for finding_id, finding in all_findings.items()
+        if finding_id not in cited_ids
+        for item in finding_values(finding)
+    ]
+    elsewhere = [
+        item.as_dict()
+        for item in uncited_values
+        if number_is_supported(written, decimals, {item.value})
+    ]
+    if elsewhere:
+        return diagnostic | {
+            "classification": "incorrect_finding_linkage",
+            "matching_uncited_values": elsewhere[:MAX_NEAREST],
+            "explanation": "the value is in the evidence of a finding this item does not cite",
+        }
+
+    coarse = [item for item in cited_values if abs(item.value - value) <= half_unit]
+    if coarse:
+        return diagnostic | {
+            "classification": "numerical_transformation",
+            "transformation": "rounded to one significant figure",
+            "operands": [item.as_dict() for item in coarse[:2]],
+            "explanation": "a cited value rounded too far; write at least two significant figures",
+        }
+    # With ~20 values per finding, pairwise arithmetic lands near most small integers by
+    # chance, so a derived match needs three significant figures or an exact result.
+    precise = _significant_digits(str(value)) >= 3
+    for name, candidate, operands in _transformations(cited_values):
+        if candidate == value or (precise and close(candidate)):
+            return diagnostic | {
+                "classification": "numerical_transformation",
+                "transformation": name,
+                "operands": [item.as_dict() for item in operands],
+                "explanation": "derived from cited values, but derived figures are not evidence",
+            }
+    return diagnostic | {
+        "classification": "unsupported_invention",
+        "explanation": "no cited, uncited or derived evidence value matches",
+    }
 
 
 class _Checker:
@@ -209,7 +364,14 @@ class _Checker:
         allowed = set().union(*(finding_numbers(f) for f in findings)) if findings else set()
         for match in NUMBER.finditer(remaining):
             if not number_is_supported(match.group(1), match.group(2), allowed):
-                self.flag("numbers_supported", path, "states a number not in the cited evidence")
+                self.violations.append(
+                    Violation(
+                        "numbers_supported",
+                        path,
+                        "states a number not in the cited evidence",
+                        diagnose_number(match.group(1), match.group(2), findings, self.findings),
+                    )
+                )
 
         currencies = {f["currency"] for f in findings}
         written = {CURRENCY_SYMBOLS[s] for s in CURRENCY_SYMBOLS if s in text}

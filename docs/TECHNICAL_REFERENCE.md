@@ -2,7 +2,7 @@
 
 > Moved from the repository root on 2026-11-12. The portfolio overview is now [README.md](../README.md). This file keeps the detailed reference: data model, attribution rules, KPI formulas, thresholds, report structure and persistence. Its architecture section and roadmap table describe the original plan, which named a Streamlit dashboard. The implemented dashboard is plain HTML in [frontend/](../frontend/README.md), and the README's roadmap supersedes the one here.
 
-GrowthPulse ingests Google Ads and Meta Ads performance data (synthetic only, today), calculates marketing KPIs, detects anomalies, and stores results in Supabase PostgreSQL. The Anthropic insight pipeline is built and tested offline (no live call yet). It's documented in [AI_INSIGHTS.md](AI_INSIGHTS.md). Planned, not yet built: live advertising connectors and a hosted dashboard. See the capability matrix in [README.md](../README.md).
+GrowthPulse ingests Google Ads and Meta Ads performance data (synthetic only, today), calculates marketing KPIs, detects anomalies, and stores results in Supabase PostgreSQL. The Anthropic insight pipeline is built and tested offline. One approved live test was made, and its response failed validation. It's documented in [AI_INSIGHTS.md](AI_INSIGHTS.md). Planned, not yet built: live advertising connectors and a hosted dashboard. See the capability matrix in [README.md](../README.md).
 
 > **Status: Milestone 3 (KPI analytics and anomaly detection).** AI analysis, persistence, and the dashboard do not exist yet. See the [roadmap](#milestone-roadmap).
 

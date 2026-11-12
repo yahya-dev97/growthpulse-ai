@@ -138,18 +138,18 @@ def response_json_schema(package: EvidencePackage) -> dict:
             "observed_facts": {
                 "type": "array",
                 "items": _object({"statement": statement, "finding_ids": finding_ids}),
-                "description": "1 to 10 facts the evidence shows directly, with no causes",
+                "description": "1 to 6 facts the evidence shows directly, with no causes",
             },
             "hypotheses": {
                 "type": "array",
                 "items": _object({"statement": statement, "finding_ids": finding_ids}),
-                "description": "Up to 8 untested explanations",
+                "description": "Up to 4 untested explanations",
             },
             "experiments": {
                 "type": "array",
                 "items": experiment,
-                "description": "Up to 6 experiment proposals",
+                "description": "Up to 3 experiment proposals",
             },
-            "limitations": {**text_list, "description": "Up to 6 extra caveats"},
+            "limitations": {**text_list, "description": "Up to 3 extra caveats"},
         }
     )

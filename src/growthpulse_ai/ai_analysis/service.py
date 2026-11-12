@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from ..config import Settings
+from .audit import RejectionAudit
 from .evidence import EvidencePackage, build_evidence_package, canonical_json
 from .fallback import deterministic_response
 from .ledger import LedgerError, SpendLedger
@@ -194,6 +195,7 @@ def generate_insights(
     config: InsightConfig | None = None,
     *,
     ledger: SpendLedger | None = None,
+    audit: RejectionAudit | None = None,
     now: datetime | None = None,
 ) -> dict:
     """Produce an insights artifact for a report. Never modifies the report."""
@@ -266,6 +268,27 @@ def generate_insights(
         insights = render_insights(InsightResponse.model_validate(model_output), package)
     else:
         insights = fallback_insights(package)
+    provider_info = {
+        "name": provider.name,
+        "mode": "live" if provider.live else "mock",
+        "requested_model": request.model,
+        "response_model": response.model if response else None,
+        "message_id": response.message_id if response else None,
+        "effort": request.effort,
+        "max_output_tokens": request.max_output_tokens,
+    }
+    # A rejected response is kept only in the local audit, never in the artifact.
+    audit_record = None
+    if response is not None and not validated and audit is not None:
+        audit_record = audit.save(
+            report_id=package.report_id,
+            package_id=package.package_id,
+            prompt_version=PROMPT_VERSION,
+            provider=provider_info,
+            stop_reason=response.stop_reason,
+            response_text=response.text,
+            violations=_reasons(violations),
+        ).as_dict()
     return {
         "artifact_schema_version": ARTIFACT_SCHEMA_VERSION,
         "report_id": package.report_id,
@@ -273,18 +296,11 @@ def generate_insights(
         "prompt_version": PROMPT_VERSION,
         "pricing_version": PRICING_VERSION,
         "generated_at": (now or datetime.now(UTC)).isoformat(timespec="seconds"),
-        "provider": {
-            "name": provider.name,
-            "mode": "live" if provider.live else "mock",
-            "requested_model": request.model,
-            "response_model": response.model if response else None,
-            "message_id": response.message_id if response else None,
-            "effort": request.effort,
-            "max_output_tokens": request.max_output_tokens,
-        },
+        "provider": provider_info,
         "outcome": "validated" if validated else "fallback",
         "validation": {"checks": list(CHECKS), "violations": _reasons(violations)},
         "model_output": model_output if validated else None,
+        "rejection_audit": audit_record,
         "cost": cost,
         "insights": insights,
     }

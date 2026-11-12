@@ -144,7 +144,7 @@ def fact_statement(finding: dict) -> str:
 
 def deterministic_response(package: EvidencePackage) -> dict:
     """A provider-shaped response built only from the evidence."""
-    findings = package.content["findings"]
+    findings = package.ordered_findings
     facts = [
         {"statement": fact_statement(finding), "finding_ids": [finding["finding_id"]]}
         for finding in findings[:MAX_FACTS]

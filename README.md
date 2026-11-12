@@ -2,7 +2,7 @@
 
 **Multi-client performance-marketing intelligence for Google Ads and Meta Ads.** GrowthPulse normalises ad-platform data, calculates KPIs without mixing incompatible metrics, detects meaningful changes with a noise guard, and turns them into human-approved experiment drafts.
 
-> **Portfolio project, synthetic data only.** Every client, account and figure here is fictional and generated deterministically. Nothing connects to a live advertising account. The analytics are deterministic and rule-based. **The Claude insight pipeline is built and tested offline, but no live Claude call has been made yet:** AI content on screen today comes from an offline mock provider or a deterministic fallback, and says so. See [what's implemented and what's planned](#implemented-versus-planned).
+> **Portfolio project, synthetic data only.** Every client, account and figure here is fictional and generated deterministically. Nothing connects to a live advertising account. The analytics are deterministic and rule-based. **The Claude insight pipeline is built and tested offline. One approved live call has been made, and validation rejected its response,** so AI content on screen today comes from an offline mock provider or a deterministic fallback, and says so. See [what's implemented and what's planned](#implemented-versus-planned).
 
 ![Performance intelligence: KPIs, daily trends by account and conversion basis, campaign performance and priority findings](portfolio/screenshots/growthpulse_performance_intelligence_1920x1080.png)
 
@@ -38,7 +38,7 @@ GrowthPulse is built around those risks: explicit conversion bases, per-currency
 | **Credential foundations** | AES-256-GCM token encryption with versioned keys, and OAuth interfaces tested with fakes. **No real tokens exist** |
 | **Dashboard** | Four screens: Performance Overview, AI Insights & Experiments, Accounts & Sync, and Reports. Plain HTML, CSS and JavaScript, light and dark modes, keyboard-accessible charts with table views |
 | **Experiment workflow (demo)** | Deterministic templates derived from findings: draft, then proposed, then approved, in page state only. **Not AI-generated, not persisted, never applied to an ad account** |
-| **AI insights (offline)** | Report → evidence package → Claude (`claude-opus-5-5`, structured output) → 15 evidence checks → facts, untested hypotheses and experiment proposals that cite finding IDs. Failures show a deterministic fallback. A $1.00 local spend ledger reserves each call's maximum cost first. Live calls are off by default and **have not been made**. See [AI insights](docs/AI_INSIGHTS.md) |
+| **AI insights (offline)** | Report → evidence package → Claude (`claude-opus-5-5`, structured output) → 15 evidence checks → facts, untested hypotheses and experiment proposals that cite finding IDs. Failures show a deterministic fallback. A $1.00 local spend ledger reserves each call's maximum cost first. Live calls are off by default. **One approved test call was made, and its response failed validation**, so it isn't shown. See [AI insights](docs/AI_INSIGHTS.md) |
 
 ## Architecture
 
@@ -62,7 +62,7 @@ flowchart LR
         FIX["Dashboard data file<br/>(generated from the pipeline)"]
         DASH["Dashboard and<br/>portfolio showcase"]
     end
-    AI["AI insights<br/>evidence checks · fallback<br/>(offline; live call pending)"]
+    AI["AI insights<br/>evidence checks · fallback<br/>(offline; live output not yet validated)"]
     CL["Claude API<br/>(gated, $1.00 ledger)"]
 
     SYN --> VAL
@@ -146,8 +146,8 @@ The integration tests drop and recreate their schemas and roles, so they refuse 
 
 | Suite | Result | Environment |
 |---|---|---|
-| Offline (unit, static migration, data, architecture, AI insights with mocks) | **964 passed** | Local: Python 3.12.11, macOS. No Anthropic API call |
-| PostgreSQL integration | **278 passed** | Local: **PostgreSQL 16.2** (disposable) |
+| Offline (unit, static migration, data, architecture, AI insights with mocks) | **995 passed** | Local: Python 3.12.11, macOS. No Anthropic API call |
+| PostgreSQL integration | **278 passed** at `6c6785b` | Local: **PostgreSQL 16.2** (disposable). Not re-run since: no persistence code has changed |
 | Dashboard and showcase browser tests | **10 passed** | Local: Node 26, Chrome 128 headless |
 | Lint, formatting, lock file | Clean | Ruff 0.17.4, uv 0.13.7 |
 | GitHub Actions, PostgreSQL **17.11** | **Passed through Milestone 5 Phases A and B** (`e09f16c`): 797 offline + 224 integration | `ubuntu-latest` |
@@ -166,7 +166,7 @@ The CI workflow runs on pushes to `main` and on pull requests. It fails if the P
 | Dashboard, four screens, from a pipeline-generated file | ✅ Implemented (static, runs locally) |
 | Experiment workflow | 🟡 Demonstration only: deterministic templates, page state, not persisted |
 | AI insights and experiment proposals: evidence package, validation, fallback, ledger | ✅ Implemented and tested offline with a mock provider |
-| Live Claude inference | ⏳ Gated and off by default. **No paid call made yet**; the first needs the owner's approval |
+| Live Claude inference | ⏳ Gated and off by default. **One approved test call made ($0.20 estimated). Its response failed validation**, the likely cause has since been fixed offline, and each further call needs the owner's approval |
 | OAuth and read-only Google Ads and Meta connectors | ⏳ Planned (Milestone 6). Interfaces and encryption only, today |
 | Persisted approvals in the dashboard | ⏳ Planned. The database side exists and is tested |
 | Scheduled syncs and hosted deployment | ⏳ Planned |
@@ -189,7 +189,7 @@ The CI workflow runs on pushes to `main` and on pull requests. It fails if the P
 | 4: Persistence on Supabase | Complete |
 | 5: Multi-client and multi-account architecture | Phases A–C complete. Phase D (applying it to the hosted database) pending approval |
 | 6: OAuth and read-only Google and Meta integrations | Planned |
-| 7: LLM insights and experiment recommendations | Offline implementation complete. First live call awaiting approval |
+| 7: LLM insights and experiment recommendations | Offline implementation complete. First live response rejected by validation; the next live test is awaiting approval |
 | 8–9: Hosted dashboard, scheduled automation | Planned |
 
 Detailed records are kept in the repository: the [technical reference](docs/TECHNICAL_REFERENCE.md), the [AI insights design](docs/AI_INSIGHTS.md), the [Milestone 5 design](MILESTONE_5_DESIGN.md), the Phase reports ([A](MILESTONE_5_PHASE_A_REPORT.md), [B](MILESTONE_5_PHASE_B_REPORT.md), [C](MILESTONE_5_PHASE_C_REPORT.md)), the [Milestone 4 report](MILESTONE_4_REPORT.md), the [Phase D readiness checklist](PHASE_D_READINESS_CHECKLIST.md) and the [dashboard notes](frontend/README.md).
