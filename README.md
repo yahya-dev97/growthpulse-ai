@@ -2,13 +2,15 @@
 
 **Multi-client performance-marketing intelligence for Google Ads and Meta Ads.** GrowthPulse normalises ad-platform data, calculates KPIs without mixing incompatible metrics, detects meaningful changes with a noise guard, and turns them into human-approved experiment drafts.
 
-> **Portfolio project, synthetic data only.** Every client, account and figure here is fictional and generated deterministically. Nothing connects to a live advertising account. The analytics are deterministic and rule-based: **LLM-generated insights are planned, not implemented.** See [what's implemented and what's planned](#implemented-versus-planned).
+> **Portfolio project, synthetic data only.** Every client, account and figure here is fictional and generated deterministically. Nothing connects to a live advertising account. The analytics are deterministic and rule-based. **The Claude integration is built and validated:** a previously generated Claude sample, checked against the report's evidence, is published as static data for one client. Nothing on screen is live inference, and the other clients show a deterministic fallback. See [what's implemented and what's planned](#implemented-versus-planned).
 
 ![Performance intelligence: KPIs, daily trends by account and conversion basis, campaign performance and priority findings](portfolio/screenshots/growthpulse_performance_intelligence_1920x1080.png)
 
 ![From analytical finding to experiment design: three findings with their evidence, each linked to a deterministic experiment draft that requires human approval](portfolio/screenshots/growthpulse_analytical_findings_experiments_1920x1080.png)
 
-*Both screenshots are rendered from the pipeline's own output with `node frontend/tools/export_showcase.mjs`.*
+![AI-generated advisory insights: a static Claude sample labelled as such, with observed facts, untested hypotheses and legacy experiment proposals, each beside GrowthPulse's own baseline, recovery target and feasibility assessment](portfolio/screenshots/growthpulse_ai_insights_sample_1440x1340.png)
+
+*The first two screenshots are rendered from the pipeline's own output with `node frontend/tools/export_showcase.mjs`. The third is the dashboard's AI Insights screen at 1440 px.*
 
 ---
 
@@ -38,6 +40,7 @@ GrowthPulse is built around those risks: explicit conversion bases, per-currency
 | **Credential foundations** | AES-256-GCM token encryption with versioned keys, and OAuth interfaces tested with fakes. **No real tokens exist** |
 | **Dashboard** | Four screens: Performance Overview, AI Insights & Experiments, Accounts & Sync, and Reports. Plain HTML, CSS and JavaScript, light and dark modes, keyboard-accessible charts with table views |
 | **Experiment workflow (demo)** | Deterministic templates derived from findings: draft, then proposed, then approved, in page state only. **Not AI-generated, not persisted, never applied to an ad account** |
+| **AI insights** | Report → evidence package → Claude (`claude-opus-5-5`, structured output) → evidence checks → facts, untested hypotheses and typed experiment proposals that cite finding IDs. GrowthPulse, not the model, derives each proposal's current baseline, historical target and feasibility. Failures show a deterministic fallback. Live calls are off by default, need explicit opt-in, and reserve their maximum cost against a $1.00 ledger first. **One validated Claude sample is published as static data.** See [AI insights](docs/AI_INSIGHTS.md) |
 
 ## Architecture
 
@@ -61,7 +64,8 @@ flowchart LR
         FIX["Dashboard data file<br/>(generated from the pipeline)"]
         DASH["Dashboard and<br/>portfolio showcase"]
     end
-    AI["LLM insights<br/>(planned, M7)"]
+    AI["AI insights<br/>evidence checks · fallback<br/>(static, validated samples)"]
+    CL["Claude API<br/>(gated, $1.00 ledger)"]
 
     SYN --> VAL
     LIVE -.-> VAL
@@ -70,7 +74,8 @@ flowchart LR
     TBL --> VIEWS
     AN --> FIX --> DASH
     VIEWS -.-> DASH
-    AN -.-> AI
+    AN --> AI --> FIX
+    AI -.-> CL
 ```
 
 Solid lines are implemented, dashed lines are planned. Four database roles keep the paths apart:
@@ -103,7 +108,6 @@ You'll need [uv](https://docs.astral.sh/uv/) and Python 3.12. The browser tests 
 ```bash
 git clone https://github.com/yahya-dev97/growthpulse-ai.git
 cd growthpulse-ai
-git checkout feat/interview-dashboard        # until this branch is merged
 uv sync --locked
 
 # Optional: regenerate the dashboard data from the pipeline (a test checks it matches)
@@ -144,9 +148,9 @@ The integration tests drop and recreate their schemas and roles, so they refuse 
 
 | Suite | Result | Environment |
 |---|---|---|
-| Offline (unit, static migration, data, architecture) | **838 passed** | Local: Python 3.12.11, macOS |
+| Offline (unit, static migration, data, architecture, AI insights with mocks) | **1031 passed** | Local: Python 3.12.11, macOS. No Anthropic API call |
 | PostgreSQL integration | **278 passed** | Local: **PostgreSQL 16.2** (disposable) |
-| Dashboard and showcase browser tests | **9 passed** | Local: Node 26, Chrome 128 headless |
+| Dashboard and showcase browser tests | **10 passed** | Local: Node 26, Chrome 128 headless |
 | Lint, formatting, lock file | Clean | Ruff 0.17.4, uv 0.13.7 |
 | GitHub Actions, PostgreSQL **17.11** | **Passed through Milestone 5 Phases A and B** (`e09f16c`): 797 offline + 224 integration | `ubuntu-latest` |
 | GitHub Actions for Phase C (`3c73806`) | **Not verified.** The run is stuck in the queue with no jobs assigned | — |
@@ -163,7 +167,8 @@ The CI workflow runs on pushes to `main` and on pull requests. It fails if the P
 | Multi-client and multi-account schema, isolation, sync engine | ✅ Implemented and tested locally. ⏳ Not yet applied to the hosted database (Phase D) |
 | Dashboard, four screens, from a pipeline-generated file | ✅ Implemented (static, runs locally) |
 | Experiment workflow | 🟡 Demonstration only: deterministic templates, page state, not persisted |
-| LLM-generated insights and experiment proposals | ⏳ Planned (Milestone 7) |
+| AI insights and experiment proposals: evidence package, validation, typed experiments with evidence-derived baselines and feasibility, fallback, ledger | ✅ Implemented. Tested offline, plus one validated live sample |
+| Live Claude inference | 🟡 Gated, offline by default. Two approved test calls ($0.35 estimated in total): the first was rejected by validation, and the second passed and is published as a static sample. Response schema 2 is not yet tried live |
 | OAuth and read-only Google Ads and Meta connectors | ⏳ Planned (Milestone 6). Interfaces and encryption only, today |
 | Persisted approvals in the dashboard | ⏳ Planned. The database side exists and is tested |
 | Scheduled syncs and hosted deployment | ⏳ Planned |
@@ -176,6 +181,7 @@ The CI workflow runs on pushes to `main` and on pull requests. It fails if the P
 - **Connections** require TLS and SCRAM-SHA-256 authentication. **Outstanding before any real client data:** certificate verification (`verify-full`).
 - **OAuth tokens,** when they exist, will be encrypted in the application with keys that never enter the database. Google Ads' OAuth scope permits changes, so read-only use will be enforced in code.
 - **Advertising accounts are never changed.** There is no code path that changes a campaign or a budget.
+- **Anthropic API key.** Read from the environment only, unwrapped only to build the SDK client, never logged or written anywhere, and never sent to the browser. A test checks for leaks with a fake key. All calls are server-side and gated, and spend is capped at $1.00 by a local ledger that fails closed.
 
 ## Roadmap
 
@@ -185,14 +191,14 @@ The CI workflow runs on pushes to `main` and on pull requests. It fails if the P
 | 4: Persistence on Supabase | Complete |
 | 5: Multi-client and multi-account architecture | Phases A–C complete. Phase D (applying it to the hosted database) pending approval |
 | 6: OAuth and read-only Google and Meta integrations | Planned |
-| 7: LLM insights and experiment recommendations | Planned |
+| 7: LLM insights and experiment recommendations | Implemented. One validated Claude sample published; schema 2 live test pending approval |
 | 8–9: Hosted dashboard, scheduled automation | Planned |
 
-Detailed records are kept in the repository: the [technical reference](docs/TECHNICAL_REFERENCE.md), the [Milestone 5 design](MILESTONE_5_DESIGN.md), the Phase reports ([A](MILESTONE_5_PHASE_A_REPORT.md), [B](MILESTONE_5_PHASE_B_REPORT.md), [C](MILESTONE_5_PHASE_C_REPORT.md)), the [Milestone 4 report](MILESTONE_4_REPORT.md), the [Phase D readiness checklist](PHASE_D_READINESS_CHECKLIST.md) and the [dashboard notes](frontend/README.md).
+Detailed records are kept in the repository: the [technical reference](docs/TECHNICAL_REFERENCE.md), the [AI insights design](docs/AI_INSIGHTS.md), the [Milestone 5 design](MILESTONE_5_DESIGN.md), the Phase reports ([A](MILESTONE_5_PHASE_A_REPORT.md), [B](MILESTONE_5_PHASE_B_REPORT.md), [C](MILESTONE_5_PHASE_C_REPORT.md)), the [Milestone 4 report](MILESTONE_4_REPORT.md), the [Phase D readiness checklist](PHASE_D_READINESS_CHECKLIST.md) and the [dashboard notes](frontend/README.md).
 
 ## Technical stack
 
-- **Language and tooling:** Python 3.12, uv, Ruff, Pydantic 2, psycopg 3, cryptography.
+- **Language and tooling:** Python 3.12, uv, Ruff, Pydantic 2, psycopg 3, cryptography, the official `anthropic` SDK.
 - **Database:** PostgreSQL, hosted on Supabase (PostgreSQL 17). There are 8 migrations, plus restrict-only revert scripts and read-only verification scripts.
 - **Frontend:** plain HTML, CSS and JavaScript with no build step. Charts are hand-written SVG, using a colour palette checked for colour-vision deficiency.
 - **Tests:** pytest, Node's built-in test runner, and headless Chrome through the DevTools Protocol.

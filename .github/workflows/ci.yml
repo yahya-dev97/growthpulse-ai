@@ -41,6 +41,8 @@ jobs:
           --health-retries 10
     env:
       GROWTHPULSE_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
+      # Not a development machine: keeps local-only features such as the AI rejection audit off.
+      APP_ENV: ci
       # A missing database URL fails the job instead of silently skipping every test.
       GROWTHPULSE_REQUIRE_POSTGRES: "1"
     steps:

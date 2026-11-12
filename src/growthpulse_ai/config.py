@@ -5,14 +5,19 @@ deployments need no file on disk. Every credential is optional at load time, so 
 synthetic-data path runs with no accounts at all.
 """
 
+from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import SecretStr, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+# The AI development budget the project owner approved. AI_BUDGET_USD may lower it; raising
+# it needs a code change and review.
+AI_BUDGET_CEILING_USD = Decimal("1.00")
 
 LIVE_DATA_REQUIRED_FIELDS = (
     "google_ads_developer_token",
@@ -50,6 +55,20 @@ class Settings(BaseSettings):
 
     anthropic_api_key: SecretStr | None = None
     anthropic_model: str = "claude-opus-5-5"
+    anthropic_effort: Literal["low", "medium", "high"] = "medium"
+
+    # AI insights. Live calls are off unless explicitly enabled, and every live call is
+    # budget-checked against the local spend ledger first. See docs/AI_INSIGHTS.md.
+    ai_live_calls_enabled: bool = False
+    ai_budget_usd: Decimal = Field(default=AI_BUDGET_CEILING_USD, ge=0, le=AI_BUDGET_CEILING_USD)
+    ai_ledger_path: Path = PROJECT_ROOT / "data" / "ai_spend_ledger.jsonl"
+    ai_max_output_tokens: int = Field(default=10_000, ge=1_024, le=16_000)
+    ai_request_timeout_seconds: float = Field(default=300.0, ge=10.0, le=600.0)
+    # Owner-only local copies of AI responses that failed validation, for review. "auto"
+    # enables it only for APP_ENV=local outside CI. Never read by the app or the dashboard.
+    ai_rejection_audit: Literal["auto", "enabled", "disabled"] = "auto"
+    ai_rejection_audit_dir: Path = PROJECT_ROOT / "data" / "ai_rejections"
+    ai_rejection_audit_retention_days: int = Field(default=14, ge=1, le=90)
 
     # Backend read/write connection, and a separate read-only one for the dashboard.
     database_url: SecretStr | None = None

@@ -15,6 +15,11 @@ in the output: live sync state (shape shown from the data's own watermarks) and 
 experiment workflow (deterministic drafts derived from findings; real AI proposals and
 persistence arrive in Milestone 7). The frontend labels both.
 
+AI insights come from a pre-generated artifact in docs/samples/ai_insights/ when one
+exists for the report, re-validated here against a freshly built evidence package; else
+from the deterministic fallback. Both mock and fallback output are flagged illustrative.
+Nothing here calls the Anthropic API.
+
 This script lives outside src/growthpulse_ai on purpose: it may import connectors and
 pipeline code freely, which the dashboard package itself must never do.
 """
@@ -29,6 +34,8 @@ from uuid import NAMESPACE_URL, uuid5
 
 from growthpulse_ai.accounts.legacy import LEGACY_SYNTHETIC_CLIENT
 from growthpulse_ai.accounts.models import AccountContext, ClientContext
+from growthpulse_ai.ai_analysis.pricing import PRICING_SOURCE, PRICING_VERSION
+from growthpulse_ai.ai_analysis.service import dashboard_insights
 from growthpulse_ai.analytics.kpis import ConversionBasis
 from growthpulse_ai.config import PROJECT_ROOT
 from growthpulse_ai.connectors.factory import SyntheticConnectorFactory
@@ -45,6 +52,9 @@ START = DEFAULT_START_DATE
 END = DEFAULT_START_DATE + timedelta(days=DEFAULT_DAYS - 1)
 M4_REPORT_ID = "feb1e17675c362408a69b029c0f932a347e2c28618880f63ec33bbbd82e4e601"
 OUTPUT = PROJECT_ROOT / "frontend" / "data" / "dashboard_data.json"
+# Pre-generated insights artifacts, one per report ID. Each is re-validated on load.
+AI_ARTIFACTS = PROJECT_ROOT / "docs" / "samples" / "ai_insights"
+
 
 CENTS = Decimal("0.01")
 PLATFORM_LABELS = {"google_ads": "Google Ads", "meta_ads": "Meta Ads"}
@@ -312,7 +322,16 @@ def sync_panel(client: ClientContext, records: list[AdPerformanceRecord]) -> dic
     }
 
 
-def build_client(spec) -> dict:
+def ai_insights(report: dict, artifact_dir=AI_ARTIFACTS) -> dict:
+    """Validated stored insights for this report if any exist, else the fallback."""
+    path = artifact_dir / f"{report['report_id']}.json"
+    artifact = json.loads(path.read_text()) if path.exists() else None
+    block = dashboard_insights(report, artifact)
+    block["illustrative"] = not block["provenance"]["is_ai_output"]
+    return block
+
+
+def build_client(spec, artifact_dir=AI_ARTIFACTS) -> dict:
     client = client_context(spec)
     factory = SyntheticConnectorFactory()
     records: list[AdPerformanceRecord] = []
@@ -397,11 +416,12 @@ def build_client(spec) -> dict:
             ),
             "drafts": experiment_drafts(active),
         },
+        "ai_insights": ai_insights(report, artifact_dir),
     }
 
 
-def build() -> dict:
-    clients = [build_client(spec) for spec in SYNTHETIC_CLIENTS]
+def build(artifact_dir=AI_ARTIFACTS) -> dict:
+    clients = [build_client(spec, artifact_dir) for spec in SYNTHETIC_CLIENTS]
     legacy = clients[0]
     if legacy["report"]["report_id"] != M4_REPORT_ID:
         raise RuntimeError("The legacy client's report no longer matches the sample report")
@@ -417,8 +437,19 @@ def build() -> dict:
                 "real analytics pipeline. Sections flagged illustrative are demonstration "
                 "fixtures, not computed results."
             ),
-            "illustrative_sections": ["sync", "experiments"],
+            "illustrative_sections": ["sync", "experiments"]
+            + (["ai_insights"] if any(c["ai_insights"]["illustrative"] for c in clients) else []),
             "report_ids": {client["key"]: client["report"]["report_id"] for client in clients},
+            "ai": {
+                "budget_usd": "1.00",
+                "budget_note": (
+                    "Development spending is capped at $1.00 and checked before every live "
+                    "call. Generation happens offline, never in the browser."
+                ),
+                "pricing_version": PRICING_VERSION,
+                "pricing_source": PRICING_SOURCE,
+                "browser_calls_anthropic": False,
+            },
         },
         "clients": clients,
     }

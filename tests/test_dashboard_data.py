@@ -45,7 +45,8 @@ def test_legacy_client_shows_the_milestone_4_report(data):
 
 def test_everything_is_synthetic_and_illustrative_sections_are_flagged(data):
     assert data["meta"]["synthetic"] is True and data["meta"]["data_source"] == "synthetic"
-    assert set(data["meta"]["illustrative_sections"]) == {"sync", "experiments"}
+    # ai_insights is illustrative until a validated Claude artifact exists for every client.
+    assert set(data["meta"]["illustrative_sections"]) == {"sync", "experiments", "ai_insights"}
     for client in data["clients"]:
         assert client["name"].endswith("(fictional)")
         assert all(a["external_account_id"].startswith("synthetic-") for a in client["accounts"])

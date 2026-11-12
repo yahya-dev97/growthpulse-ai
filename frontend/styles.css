@@ -449,12 +449,45 @@ table.data th { color: var(--muted); font-weight: 560; font-size: 11px; letter-s
 
 .empty { color: var(--muted); font-size: 13px; padding: 18px 0; text-align: center; }
 
+/* ---------- AI insights panel ---------- */
+
+.ai-panel { margin-bottom: 14px; }
+.ai-prov { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 2px 0 12px; }
+.ai-prov .mono { font-size: 11.5px; color: var(--muted); }
+.badge.ai-source { color: var(--ink); border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.badge.ai-fallback { color: var(--ink); border-color: color-mix(in srgb, var(--warning) 55%, transparent); background: color-mix(in srgb, var(--warning) 12%, transparent); }
+.ai-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.4fr); gap: 16px; }
+.ai-col h4 { margin: 0 0 8px; font-size: 11.5px; font-weight: 650; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); }
+.ai-col .kind-note { font-size: 11.5px; color: var(--muted); margin: -4px 0 8px; }
+.ai-item { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; background: var(--surface); font-size: 12.5px; color: var(--ink-2); }
+.ai-item p { margin: 0 0 6px; }
+.ai-item .ai-title { font-size: 13px; font-weight: 630; color: var(--ink); margin-bottom: 4px; }
+.ai-cites { display: flex; flex-wrap: wrap; gap: 4px; }
+.ai-cite { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 99px; padding: 1px 8px; background: var(--surface-2); }
+.ai-fields { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 10px; margin: 6px 0; font-size: 12px; }
+.ai-fields dt { color: var(--muted); }
+.ai-fields dd { margin: 0; color: var(--ink-2); }
+.ai-spend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12px; color: var(--ink-2); border-top: 1px solid var(--grid); padding-top: 10px; margin-top: 6px; }
+.ai-legacy { font-size: 11.5px; color: var(--muted); border-left: 2px solid var(--border); padding-left: 8px; }
+.ai-feas { border: 1px dashed var(--border); border-radius: 8px; padding: 8px 10px; margin: 6px 0 8px; background: var(--surface-2); }
+.ai-feas p { margin: 0; }
+.ai-feas-head { font-size: 11px; font-weight: 640; color: var(--muted); letter-spacing: 0.02em; margin-bottom: 4px; }
+.ai-feas-more summary { font-size: 11.5px; color: var(--accent); cursor: pointer; margin-top: 4px; }
+.badge.draft { color: var(--ink-2); border-color: var(--border); background: var(--surface-2); }
+.badge.blocked { color: var(--ink); border-color: color-mix(in srgb, var(--warning) 55%, transparent); background: color-mix(in srgb, var(--warning) 14%, transparent); }
+.ai-spend strong { color: var(--ink); font-weight: 640; }
+
 @media (max-width: 1100px) {
   .grid.tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .grid.charts, .grid.split { grid-template-columns: minmax(0, 1fr); }
+  .ai-cols { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 680px) {
   .topbar, .nav, .scopebar { padding-left: 16px; padding-right: 16px; }
+  /* Four tabs fit at phone width with tighter padding; the row scrolls on its own if a
+     larger font ever widens it, so the page itself never scrolls sideways. */
+  .nav { overflow-x: auto; scrollbar-width: none; }
+  .nav button { padding-left: 8px; padding-right: 8px; }
   main, footer { padding-left: 16px; padding-right: 16px; }
   .grid.tiles { grid-template-columns: minmax(0, 1fr); }
   .topbar { flex-wrap: wrap; height: auto; padding-top: 10px; padding-bottom: 10px; }
