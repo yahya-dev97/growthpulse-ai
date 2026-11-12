@@ -147,7 +147,7 @@ The integration tests drop and recreate their schemas and roles, so they refuse 
 | Suite | Result | Environment |
 |---|---|---|
 | Offline (unit, static migration, data, architecture, AI insights with mocks) | **995 passed** | Local: Python 3.12.11, macOS. No Anthropic API call |
-| PostgreSQL integration | **278 passed** at `6c6785b` | Local: **PostgreSQL 16.2** (disposable). Not re-run since: no persistence code has changed |
+| PostgreSQL integration | **278 passed** | Local: **PostgreSQL 16.2** (disposable) |
 | Dashboard and showcase browser tests | **10 passed** | Local: Node 26, Chrome 128 headless |
 | Lint, formatting, lock file | Clean | Ruff 0.17.4, uv 0.13.7 |
 | GitHub Actions, PostgreSQL **17.11** | **Passed through Milestone 5 Phases A and B** (`e09f16c`): 797 offline + 224 integration | `ubuntu-latest` |
