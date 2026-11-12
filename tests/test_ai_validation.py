@@ -10,6 +10,7 @@ from growthpulse_ai.ai_analysis.evidence import build_evidence_package
 from growthpulse_ai.ai_analysis.fallback import deterministic_response
 from growthpulse_ai.ai_analysis.validation import (
     CHECKS,
+    CHECKS_V1,
     number_is_supported,
     validate_response,
 )
@@ -62,7 +63,8 @@ def two_findings(package, *, same_currency=True, same_basis=False) -> tuple[dict
 def test_the_deterministic_response_passes_every_check(package, response):
     result = validate_response(response, package)
     assert result.ok, result.violations
-    assert len(CHECKS) == 15
+    assert len(CHECKS) == 17 and len(CHECKS_V1) == 15
+    assert CHECKS[:15] == CHECKS_V1  # version 1's checks are unchanged
 
 
 def test_rounded_evidence_values_and_rates_as_percentages_are_supported(package, response):

@@ -55,17 +55,6 @@ OUTPUT = PROJECT_ROOT / "frontend" / "data" / "dashboard_data.json"
 # Pre-generated insights artifacts, one per report ID. Each is re-validated on load.
 AI_ARTIFACTS = PROJECT_ROOT / "docs" / "samples" / "ai_insights"
 
-# Entered by hand from the Anthropic Console by the account owner. GrowthPulse never reads
-# the account balance and never reconciles its ledger against it.
-MANUAL_BALANCE_SNAPSHOT = {
-    "amount_usd": "2.84",
-    "as_of": "2026-11-12",
-    "source": "Reported by the account owner from the Anthropic Console",
-    "note": (
-        "A dated manual snapshot, not fetched. The local spend ledger is an estimate and is "
-        "never assumed to equal this balance."
-    ),
-}
 
 CENTS = Decimal("0.01")
 PLATFORM_LABELS = {"google_ads": "Google Ads", "meta_ads": "Meta Ads"}
@@ -454,13 +443,12 @@ def build(artifact_dir=AI_ARTIFACTS) -> dict:
             "ai": {
                 "budget_usd": "1.00",
                 "budget_note": (
-                    "Development budget approved by the project owner, enforced before every "
-                    "live call by GrowthPulse's local spend ledger."
+                    "Development spending is capped at $1.00 and checked before every live "
+                    "call. Generation happens offline, never in the browser."
                 ),
                 "pricing_version": PRICING_VERSION,
                 "pricing_source": PRICING_SOURCE,
                 "browser_calls_anthropic": False,
-                "manual_balance_snapshot": MANUAL_BALANCE_SNAPSHOT,
             },
         },
         "clients": clients,

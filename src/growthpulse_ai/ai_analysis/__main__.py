@@ -13,6 +13,7 @@ room for the reservation. One request per run, never retried.
 """
 
 import argparse
+import hashlib
 import json
 import sys
 from collections.abc import Callable
@@ -25,7 +26,14 @@ from .evidence import EvidenceError, build_evidence_package
 from .fallback import deterministic_response
 from .ledger import LedgerError, SpendLedger
 from .providers import AnthropicProvider, InsightProvider, MockProvider, ProviderError
-from .service import InsightConfig, build_request, generate_insights, request_max_cost
+from .service import (
+    InsightConfig,
+    PublicationError,
+    build_request,
+    generate_insights,
+    publish_artifact,
+    request_max_cost,
+)
 
 EXIT_VALIDATED, EXIT_BLOCKED, EXIT_FALLBACK = 0, 2, 3
 
@@ -62,6 +70,12 @@ def _parser() -> argparse.ArgumentParser:
     generate.add_argument("--live", action="store_true", help="make one paid Anthropic call")
     generate.add_argument("--confirm-max-cost", type=_money, metavar="USD")
     commands.add_parser("ledger", help="show the local spend ledger")
+    publish = commands.add_parser(
+        "publish", help="write a sanitised static sample from a validated live artifact"
+    )
+    publish.add_argument("--artifact", type=Path, required=True)
+    publish.add_argument("--report", type=Path, required=True)
+    publish.add_argument("--out", type=Path, required=True)
     return parser
 
 
@@ -99,6 +113,29 @@ def live_provider(
         raise GateError(str(error)) from None
 
 
+def _publish(args: argparse.Namespace) -> int:
+    """No API call: re-validates a stored live artifact and writes a sanitised copy."""
+    try:
+        raw = args.artifact.read_bytes()
+        artifact = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as error:
+        raise GateError(f"cannot read the artifact ({type(error).__name__})") from None
+    try:
+        published = publish_artifact(
+            artifact, _load_report(args.report), hashlib.sha256(raw).hexdigest()
+        )
+    except PublicationError as error:
+        raise GateError(str(error)) from None
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(json.dumps(published, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    print(
+        f"Published a static sample: response schema {published['response_schema_version']}, "
+        f"{len(published['validation']['checks'])} checks re-validated, model "
+        f"{published['provider']['response_model']}. Wrote {args.out}"
+    )
+    return EXIT_VALIDATED
+
+
 def main(
     argv: list[str] | None = None,
     settings: Settings | None = None,
@@ -108,6 +145,8 @@ def main(
     settings = settings or get_settings()
     ledger = SpendLedger(settings.ai_ledger_path, settings.ai_budget_usd)
     try:
+        if args.command == "publish":
+            return _publish(args)
         if args.command == "ledger":
             print(json.dumps(ledger.summary().as_dict(), indent=2))
             return EXIT_VALIDATED

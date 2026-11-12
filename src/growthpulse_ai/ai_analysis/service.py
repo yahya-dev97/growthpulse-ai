@@ -20,6 +20,7 @@ from ..config import Settings
 from .audit import RejectionAudit
 from .evidence import EvidencePackage, build_evidence_package, canonical_json
 from .fallback import deterministic_response
+from .feasibility import assess_feasibility, reference_values, tracking_risk_campaigns
 from .ledger import LedgerError, SpendLedger
 from .pricing import (
     PRICING_VERSION,
@@ -30,8 +31,14 @@ from .pricing import (
 )
 from .prompt import PROMPT_VERSION, SYSTEM_PROMPT, user_message
 from .providers import InsightProvider, ProviderError, ProviderRequest, ProviderResponse
-from .schema import InsightResponse, response_json_schema
-from .validation import CHECKS, Violation, validate_response
+from .schema import (
+    RESPONSE_SCHEMA_VERSION,
+    SUPPORTED_RESPONSE_SCHEMA_VERSIONS,
+    InsightResponse,
+    InsightResponseV1,
+    response_json_schema,
+)
+from .validation import CHECKS, CHECKS_BY_VERSION, Violation, validate_response
 
 ARTIFACT_SCHEMA_VERSION = "1.0"
 MAX_RECORDED_VIOLATIONS = 50
@@ -92,9 +99,23 @@ def _citation(finding: dict) -> dict:
     }
 
 
-def render_insights(response: InsightResponse, package: EvidencePackage) -> dict:
-    """Dashboard-ready insights. Every value shown beside the prose comes from evidence."""
+LEGACY_NOTE = (
+    "Legacy advisory proposal: generated under response schema 1, before experiments had to "
+    "state a type, success criteria, guardrails and measurement-repair order. It passed the "
+    "15 evidence checks of that schema. The assessment beside it is GrowthPulse's own, "
+    "derived from the evidence, not part of the AI output."
+)
+
+
+def render_insights(
+    response: InsightResponse | InsightResponseV1,
+    package: EvidencePackage,
+    schema_version: str = RESPONSE_SCHEMA_VERSION,
+) -> dict:
+    """Dashboard-ready insights. Every value shown beside the prose comes from evidence:
+    reference values and feasibility are derived by GrowthPulse, never written by a model."""
     findings = package.findings
+    tracking_risk = tracking_risk_campaigns(package)
 
     def cite(ids: list[str]) -> list[dict]:
         return [_citation(findings[finding_id]) for finding_id in ids]
@@ -102,46 +123,57 @@ def render_insights(response: InsightResponse, package: EvidencePackage) -> dict
     experiments = []
     for item in response.experiments:
         baseline = findings[item.baseline_finding_id]
-        current = item.baseline_reference == "current_value"
-        period_key = "current_period" if current else "baseline_period"
         basis = baseline["conversion_basis"]
-        experiments.append(
-            {
-                "title": item.title,
-                "kind": item.kind,
-                "problem_statement": item.problem_statement,
-                "hypothesis": item.hypothesis,
-                "proposed_experiment": item.proposed_experiment,
-                "target_metric": item.target_metric,
-                "target_metric_label": baseline["metric_label"],
-                "baseline": {
-                    "finding_id": baseline["finding_id"],
-                    "reference": item.baseline_reference,
-                    "value": baseline[item.baseline_reference],
-                    "period": baseline[period_key],
-                    "baseline_kind": baseline["baseline_kind"],
-                    "currency": baseline["currency"],
-                },
-                "attribution": {
-                    "basis_id": basis["basis_id"],
-                    "platform": basis["platform"],
-                    "stage": basis["stage"],
-                    "event_name": basis["event_name"],
-                    "attribution_model": basis["attribution_model"],
-                    "click_window_days": basis["click_window_days"],
-                    "view_window_days": basis["view_window_days"],
-                },
-                "measurement_method": item.measurement_method,
-                "duration_days": item.duration_days,
-                "risks": list(item.risks),
-                "assumptions": list(item.assumptions),
-                "citations": cite(item.finding_ids),
-                "requires_human_approval": True,
-                "status": "proposal",
-                "approval": "not_requested",
-                "executed": False,
-            }
-        )
+        cited_campaigns = {findings[finding_id]["campaign_id"] for finding_id in item.finding_ids}
+        legacy = schema_version == "1"
+        experiment_type = None if legacy else item.experiment_type
+        entry = {
+            "title": item.title,
+            "kind": item.kind,
+            "legacy": legacy,
+            "legacy_note": LEGACY_NOTE if legacy else None,
+            "experiment_type": experiment_type,
+            "problem_statement": item.problem_statement,
+            "hypothesis": item.hypothesis,
+            "proposed_experiment": item.proposed_experiment,
+            "target_metric": item.target_metric,
+            "target_metric_label": baseline["metric_label"],
+            "reference_values": reference_values(baseline),
+            "attribution": {
+                "basis_id": basis["basis_id"],
+                "platform": basis["platform"],
+                "stage": basis["stage"],
+                "event_name": basis["event_name"],
+                "attribution_model": basis["attribution_model"],
+                "click_window_days": basis["click_window_days"],
+                "view_window_days": basis["view_window_days"],
+            },
+            "comparison_label": baseline["comparison_label"],
+            "measurement_method": item.measurement_method,
+            "success_criteria": None if legacy else item.success_criteria,
+            "guardrail_metrics": [] if legacy else list(item.guardrail_metrics),
+            "requires_measurement_repair_first": (
+                None if legacy else item.requires_measurement_repair_first
+            ),
+            "duration_days": item.duration_days,
+            "feasibility": assess_feasibility(
+                experiment_type,
+                item.target_metric,
+                baseline,
+                item.duration_days,
+                tracking_risk=bool(cited_campaigns & tracking_risk),
+            ),
+            "risks": list(item.risks),
+            "assumptions": list(item.assumptions),
+            "citations": cite(item.finding_ids),
+            "requires_human_approval": True,
+            "status": "proposal",
+            "approval": "not_requested",
+            "executed": False,
+        }
+        if legacy:
+            entry["model_selected_reference"] = item.baseline_reference
+        experiments.append(entry)
     return {
         "observed_facts": [
             {"statement": f.statement, "citations": cite(f.finding_ids)}
@@ -298,6 +330,7 @@ def generate_insights(
         "generated_at": (now or datetime.now(UTC)).isoformat(timespec="seconds"),
         "provider": provider_info,
         "outcome": "validated" if validated else "fallback",
+        "response_schema_version": RESPONSE_SCHEMA_VERSION,
         "validation": {"checks": list(CHECKS), "violations": _reasons(violations)},
         "model_output": model_output if validated else None,
         "rejection_audit": audit_record,
@@ -306,25 +339,90 @@ def generate_insights(
     }
 
 
+def artifact_schema_version(artifact: dict) -> str:
+    """The response schema an artifact was validated under. Older artifacts predate the
+    field, and were all version 1."""
+    return str(artifact.get("response_schema_version", "1"))
+
+
 def revalidate_artifact(artifact: dict, report: dict) -> tuple[dict | None, str | None]:
-    """Re-check a stored artifact against the current report. Returns (insights, reason)."""
+    """Re-check a stored artifact against the current report, under the schema version it
+    was generated with, and render it. Returns (insights, reason)."""
     package = build_evidence_package(report)
+    version = artifact_schema_version(artifact)
     if artifact.get("artifact_schema_version") != ARTIFACT_SCHEMA_VERSION:
         return None, "unsupported artifact version"
+    if version not in SUPPORTED_RESPONSE_SCHEMA_VERSIONS:
+        return None, "unsupported response schema version"
     if artifact.get("report_id") != package.report_id:
         return None, "artifact is for a different report"
     if artifact.get("package_id") != package.package_id:
         return None, "artifact was generated from different evidence"
     if artifact.get("outcome") != "validated" or artifact.get("model_output") is None:
         return None, "artifact holds no validated model output"
-    result = validate_response(artifact["model_output"], package)
+    result = validate_response(artifact["model_output"], package, version)
     if not result.ok:
         return None, "artifact failed re-validation"
-    return render_insights(result.response, package), None
+    return render_insights(result.response, package, version), None
+
+
+# Kept in a published sample. Everything else (request and message IDs, the reservation,
+# the ledger snapshot, the rejection-audit record, local paths) is dropped.
+PUBLISHED_PROVIDER_FIELDS = (
+    "name", "mode", "requested_model", "response_model", "effort", "max_output_tokens",
+)  # fmt: skip
+PUBLISHED_COST_FIELDS = ("status", "estimated_usd", "usage")
+SECRET_PATTERNS = ("sk-ant-", "x-api-key", "authorization", "bearer ")
+
+
+class PublicationError(ValueError):
+    """An artifact cannot be published as a static sample."""
+
+
+def publish_artifact(artifact: dict, report: dict, source_sha256: str) -> dict:
+    """A sanitised, static copy of a validated live artifact, for the dashboard.
+
+    The model output is carried over unchanged and must re-validate under its own schema
+    version. Only provenance needed to label the sample is kept.
+    """
+    if artifact.get("provider", {}).get("name") != "anthropic":
+        raise PublicationError("only Anthropic artifacts are published as AI samples")
+    if artifact.get("provider", {}).get("mode") != "live":
+        raise PublicationError("only live-generated artifacts are published as AI samples")
+    insights, reason = revalidate_artifact(artifact, report)
+    if insights is None:
+        raise PublicationError(f"the artifact does not re-validate: {reason}")
+    version = artifact_schema_version(artifact)
+    published = {
+        "artifact_schema_version": ARTIFACT_SCHEMA_VERSION,
+        "response_schema_version": version,
+        "report_id": artifact["report_id"],
+        "package_id": artifact["package_id"],
+        "prompt_version": artifact["prompt_version"],
+        "pricing_version": artifact["pricing_version"],
+        "generated_at": artifact["generated_at"],
+        "provider": {key: artifact["provider"].get(key) for key in PUBLISHED_PROVIDER_FIELDS},
+        "outcome": "validated",
+        "validation": {"checks": list(CHECKS_BY_VERSION[version]), "violations": []},
+        "model_output": artifact["model_output"],
+        "cost": {key: artifact["cost"].get(key) for key in PUBLISHED_COST_FIELDS},
+        "publication": {
+            "kind": "static_sample",
+            "source_artifact_sha256": source_sha256,
+            "note": (
+                "A previously generated, validated sample, published as static data. Request "
+                "identifiers, budget reservations and ledger details were removed."
+            ),
+        },
+    }
+    text = json.dumps(published).lower()
+    if any(pattern in text for pattern in SECRET_PATTERNS):
+        raise PublicationError("the artifact contains credential-like text")
+    return published
 
 
 SOURCE_LABELS = {
-    "anthropic": "Claude (Anthropic API), pre-generated and validated",
+    "anthropic": "AI-generated by Claude: a static, previously generated sample",
     "mock": "Offline mock provider: deterministic template content, not Claude output",
     "deterministic_fallback": "Deterministic fallback: rule-based templates, not AI output",
 }
@@ -341,6 +439,11 @@ def dashboard_insights(report: dict, artifact: dict | None = None) -> dict:
     if insights is None:
         insights = fallback_insights(package)
         reason = reason or "no AI artifact has been generated for this report"
+    version = (
+        artifact_schema_version(artifact)
+        if source != "deterministic_fallback"
+        else (RESPONSE_SCHEMA_VERSION)
+    )
     provenance = {
         "source": source,
         "source_label": SOURCE_LABELS.get(source, source),
@@ -352,7 +455,8 @@ def dashboard_insights(report: dict, artifact: dict | None = None) -> dict:
         ),
         "report_id": package.report_id,
         "package_id": package.package_id,
-        "validation_checks": list(CHECKS),
+        "response_schema_version": version,
+        "validation_checks": list(CHECKS_BY_VERSION[version]),
         "validated": source != "deterministic_fallback",
         "fallback_reason": reason if source == "deterministic_fallback" else None,
     }
@@ -361,12 +465,8 @@ def dashboard_insights(report: dict, artifact: dict | None = None) -> dict:
         provenance |= {
             "generated_at": artifact["generated_at"],
             "prompt_version": artifact["prompt_version"],
-            "pricing_version": artifact["pricing_version"],
             "model": provider["response_model"] or provider["requested_model"],
             "mode": provider["mode"],
-            "cost": {
-                key: artifact["cost"].get(key)
-                for key in ("status", "estimated_usd", "reserved_max_usd", "usage", "ledger_after")
-            },
+            "estimated_cost_usd": artifact["cost"].get("estimated_usd"),
         }
     return {"provenance": provenance, **insights}

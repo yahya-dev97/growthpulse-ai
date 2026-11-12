@@ -37,6 +37,7 @@ from growthpulse_ai.ai_analysis.service import (
     request_max_cost,
     revalidate_artifact,
 )
+from growthpulse_ai.ai_analysis.validation import CHECKS_V1, validate_response
 from growthpulse_ai.config import PROJECT_ROOT, Settings
 
 SAMPLE = PROJECT_ROOT / "docs" / "samples" / "synthetic_analytics_report.json"
@@ -84,12 +85,13 @@ def test_mock_success_is_validated_free_and_touches_no_ledger(report, package, t
         assert experiment["requires_human_approval"] is True
         assert experiment["status"] == "proposal" and experiment["executed"] is False
         assert experiment["approval"] == "not_requested"
-        assert (
-            experiment["baseline"]["value"]
-            == package.findings[experiment["baseline"]["finding_id"]][
-                experiment["baseline"]["reference"]
-            ]
-        )
+        # Reference values come from the evidence, never from the model.
+        references = experiment["reference_values"]
+        finding = package.findings[references["finding_id"]]
+        assert references["current"]["value"] == finding["current_value"]
+        assert references["current"]["period"] == finding["current_period"]
+        assert experiment["legacy"] is False and experiment["experiment_type"]
+    assert artifact["response_schema_version"] == "2"
     assert not list(tmp_path.iterdir())
 
 
@@ -125,11 +127,45 @@ def test_the_package_holds_only_report_values(report, package):
     assert package.content["omitted"]["suppressed_by_noise_guard"] == 5
 
 
-def test_the_committed_mock_artifact_revalidates(report):
-    artifact = json.loads(ARTIFACT.read_text())
-    assert artifact["provider"]["mode"] == "mock"
+def test_the_published_sample_is_sanitised_and_revalidates_under_its_own_schema(report):
+    """The published Claude sample: schema 1, its original 15 checks, no request details."""
+    text = ARTIFACT.read_text()
+    artifact = json.loads(text)
+    assert artifact["provider"] == {
+        "name": "anthropic", "mode": "live", "requested_model": "claude-opus-5-5",
+        "response_model": "claude-opus-5-5", "effort": "medium", "max_output_tokens": 10_000,
+    }  # fmt: skip
+    assert artifact["response_schema_version"] == "1"
+    assert artifact["validation"] == {"checks": list(CHECKS_V1), "violations": []}
+    assert artifact["publication"]["kind"] == "static_sample"
+    assert len(artifact["publication"]["source_artifact_sha256"]) == 64
+    assert set(artifact["cost"]) == {"status", "estimated_usd", "usage"}
+    for dropped in ("message_id", "request_id", "ledger_after", "reserved_max_usd",
+                    "rejection_audit", "/Users/", "sk-ant-"):  # fmt: skip
+        assert dropped not in text
     insights, reason = revalidate_artifact(artifact, report)
     assert insights is not None and reason is None
+    assert all(e["legacy"] and e["legacy_note"] for e in insights["experiments"])
+    assert validate_response(artifact["model_output"], build_evidence_package(report), "1").ok
+    assert not validate_response(artifact["model_output"], build_evidence_package(report)).ok
+
+
+def test_publication_refuses_anything_but_a_validated_live_anthropic_artifact(report, package):
+    from growthpulse_ai.ai_analysis.service import PublicationError, publish_artifact
+
+    mock = generate_insights(report, MockProvider(payload=valid_payload(package)))
+    with pytest.raises(PublicationError):
+        publish_artifact(mock, report, "0" * 64)
+    live = json.loads(ARTIFACT.read_text())
+    tampered = copy.deepcopy(live)
+    tampered["model_output"]["observed_facts"][0]["statement"] += " Bookings rose 77.77%."
+    with pytest.raises(PublicationError):
+        publish_artifact(tampered, report, "0" * 64)
+    leaky = copy.deepcopy(live)
+    leaky["provider"]["requested_model"] = "x-api-key leaked"
+    with pytest.raises(PublicationError):
+        publish_artifact(leaky, report, "0" * 64)
+    assert publish_artifact(live, report, "f" * 64)["model_output"] == live["model_output"]
 
 
 # --- failures fall back --------------------------------------------------------------
@@ -572,7 +608,9 @@ def test_dashboard_data_never_presents_static_content_as_live_ai():
     text = json.dumps(data)
     assert "sk-ant-" not in text and "api_key" not in text.lower()
     assert data["meta"]["ai"]["browser_calls_anthropic"] is False
-    assert data["meta"]["ai"]["manual_balance_snapshot"]["as_of"] == "2026-11-12"
+    for internal in ("manual_balance", "ledger_after", "message_id", "request_id",
+                     "reserved_max_usd", "/Users/", "/private/"):  # fmt: skip
+        assert internal not in text
     sources = set()
     for client in data["clients"]:
         provenance = client["ai_insights"]["provenance"]
@@ -581,8 +619,12 @@ def test_dashboard_data_never_presents_static_content_as_live_ai():
         assert client["ai_insights"]["illustrative"] is (not provenance["is_ai_output"])
         for experiment in client["ai_insights"]["experiments"]:
             assert experiment["requires_human_approval"] and not experiment["executed"]
-    assert sources == {"mock", "deterministic_fallback"}
+    assert sources == {"anthropic", "deterministic_fallback"}
     assert "ai_insights" in data["meta"]["illustrative_sections"]
+    sample = data["clients"][0]["ai_insights"]
+    assert sample["provenance"]["is_ai_output"] and sample["provenance"]["mode"] == "live"
+    assert len(sample["provenance"]["validation_checks"]) == 15
+    assert all(e["legacy"] for e in sample["experiments"])
 
 
 def test_the_dashboard_builder_falls_back_for_an_empty_artifact_dir(tmp_path, report):

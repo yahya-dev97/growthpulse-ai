@@ -37,15 +37,12 @@ The legacy client's report is the committed sample report, `feb1e176…`. The sc
 Three sections are **illustrative**. They're flagged in the data and labelled on screen:
 - **Sync status.** No database is connected, so watermarks come from the dataset itself.
 - **The experiment workflow.** Drafts are deterministic templates derived from the findings, not AI output. Promoting and approving them only changes page state, which resets on reload. Every draft requires human approval, and nothing can change a campaign.
-- **AI insights,** until a validated Claude artifact exists. The panel shows one of three sources, named in its provenance badge:
-  - a pre-generated Claude artifact;
+- **AI insights,** except for the published Claude sample. The panel shows one of three sources, named in its provenance badge:
+  - a published Claude sample: static, previously generated, re-validated;
   - an offline mock artifact;
   - the deterministic fallback.
 
-  Today the sample client shows the mock artifact, and the other clients show the fallback. Every stored artifact is re-validated against the report's evidence when the data is built. The browser never calls the Anthropic API, and nothing on screen is live inference. The panel also shows:
-  - the $1.00 development budget;
-  - the cost recorded in the artifact;
-  - the Anthropic balance as a dated manual snapshot, never fetched.
+  Today the sample client shows the published Claude sample, and the other clients show the fallback. The sample's experiments are legacy (schema 1) proposals. Each experiment shows GrowthPulse's own current baseline, historical recovery target and feasibility, all from the evidence. The browser never calls the Anthropic API, and nothing on screen is live inference. The panel also shows the $1.00 development cap and the sample's estimated generation cost.
 
   See [docs/AI_INSIGHTS.md](../docs/AI_INSIGHTS.md).
 
@@ -74,7 +71,7 @@ node --test frontend/tests/dashboard.test.mjs  # UI smoke tests in headless Chro
   - the multi-currency client shows one portfolio per currency;
   - account scope works;
   - the demo workflow is labelled;
-  - the AI panel names its source, and never claims live inference.
+  - the AI panel names its source, labels legacy proposals, and never claims live inference.
 
 ## Portfolio screenshots
 

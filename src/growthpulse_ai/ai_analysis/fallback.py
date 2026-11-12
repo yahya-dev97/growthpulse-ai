@@ -9,6 +9,7 @@ structured ``duration_days`` field. Same package in, same insights out.
 from decimal import Decimal
 
 from .evidence import EvidencePackage
+from .feasibility import tracking_risk_campaigns
 
 MAX_FACTS = 6
 MAX_HYPOTHESES = 4
@@ -54,11 +55,11 @@ TEMPLATES: dict[str, dict] = {
     "spend_with_zero_conversions": {
         "hypothesis": "A conversion-tracking fault is as likely as true non-performance "
         "to explain spend with no platform-attributed conversions on {campaign}.",
-        "title": "Tracking audit, then pause test, on {campaign}",
-        "experiment": "Audit conversion tracking for {campaign} first. Only if tracking is "
-        "intact, test pausing the campaign against keeping it live.",
-        "measurement": "Confirm test conversions are recorded, then compare platform-attributed "
-        "conversions across the client's other campaigns during the pause.",
+        "title": "Tracking audit and repair on {campaign}",
+        "experiment": "Audit conversion tracking for {campaign}, repair any fault found, and "
+        "record a test conversion end to end before any performance test is read.",
+        "measurement": "Confirm that test conversions appear on the same conversion basis, "
+        "then watch whether daily platform-attributed conversions resume.",
         "duration_days": 7,
         "risks": ["Pausing a campaign whose tracking is broken would hide a real performer."],
         "assumptions": ["The audit can be completed before any pause is considered."],
@@ -142,6 +143,47 @@ def fact_statement(finding: dict) -> str:
     return statement + "."
 
 
+# rule_id -> (experiment type, success criteria, guardrail metrics). No numbers.
+DESIGN: dict[str, tuple[str, str, list[str]]] = {
+    "cost_per_conversion_increase": (
+        "randomized_experiment",
+        "The test arm shows a lower cost per platform-attributed conversion than the control "
+        "arm on the same conversion basis, without losing conversion volume.",
+        ["platform_attributed_conversions", "spend"],
+    ),
+    "conversion_rate_decline": (
+        "randomized_experiment",
+        "The variant page shows a higher platform-attributed conversion rate than the current "
+        "page on the same conversion basis.",
+        ["cost_per_platform_attributed_conversion", "clicks"],
+    ),
+    "spend_without_conversion_growth": (
+        "randomized_experiment",
+        "Holding budget back keeps platform-attributed conversions close to the control arm "
+        "while spend falls.",
+        ["platform_attributed_conversions", "cost_per_platform_attributed_conversion"],
+    ),
+    "spend_with_zero_conversions": (
+        "measurement_repair",
+        "A test conversion is recorded end to end and the conversion event reports again, "
+        "verified by a person before any performance result is read.",
+        ["spend", "clicks"],
+    ),
+    "roas_deterioration": (
+        "randomized_experiment",
+        "The new creatives show higher platform-attributed ROAS than the current ones on the "
+        "same conversion basis, without a fall in conversion volume.",
+        ["platform_attributed_conversions", "spend"],
+    ),
+    "strong_performer": (
+        "randomized_experiment",
+        "Cost per platform-attributed conversion stays close to its current level as budget "
+        "rises, and conversion volume grows.",
+        ["platform_attributed_conversions", "platform_attributed_roas"],
+    ),
+}
+
+
 def deterministic_response(package: EvidencePackage) -> dict:
     """A provider-shaped response built only from the evidence."""
     findings = package.ordered_findings
@@ -150,6 +192,7 @@ def deterministic_response(package: EvidencePackage) -> dict:
         for finding in findings[:MAX_FACTS]
     ]
     hypotheses, experiments, seen = [], [], set()
+    tracking_risk = tracking_risk_campaigns(package)
     for finding in findings:
         template = TEMPLATES.get(finding["rule_id"])
         key = (finding["rule_id"], finding["campaign_id"])
@@ -165,6 +208,7 @@ def deterministic_response(package: EvidencePackage) -> dict:
                 }
             )
         if len(experiments) < MAX_EXPERIMENTS:
+            experiment_type, success, guardrails = DESIGN[finding["rule_id"]]
             experiments.append(
                 {
                     "title": template["title"].format(campaign=campaign),
@@ -175,10 +219,16 @@ def deterministic_response(package: EvidencePackage) -> dict:
                     "proposed_experiment": template["experiment"].format(campaign=campaign),
                     "target_metric": finding["metric"],
                     "baseline_finding_id": finding["finding_id"],
-                    "baseline_reference": "current_value",
                     "attribution_basis_id": finding["conversion_basis"]["basis_id"],
                     "currency": finding["currency"],
                     "measurement_method": template["measurement"],
+                    "experiment_type": experiment_type,
+                    "success_criteria": success,
+                    "guardrail_metrics": list(guardrails),
+                    "requires_measurement_repair_first": (
+                        experiment_type == "randomized_experiment"
+                        and finding["campaign_id"] in tracking_risk
+                    ),
                     "duration_days": template["duration_days"],
                     "risks": list(template["risks"]),
                     "assumptions": list(template["assumptions"]),

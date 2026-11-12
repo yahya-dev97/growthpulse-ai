@@ -1,6 +1,6 @@
 # AI insights: architecture, safeguards and costs
 
-**Status (12 Nov 2026): implemented and tested offline. One approved live call has been made, and its response was rejected by validation.** Everything AI-related on the dashboard is produced by an offline mock provider or a deterministic fallback, and is labelled that way. See [Live test record](#live-test-record). Each further paid call needs the project owner's approval.
+**Status (12 Nov 2026): two approved live calls have been made, at about $0.35 in total. The second response passed validation and is published as a static sample** for the sample client. The other clients show the deterministic fallback. See [Live test record](#live-test-record). Each further paid call needs the project owner's approval.
 
 ## What it does
 
@@ -10,9 +10,9 @@ GrowthPulse sends Claude an **evidence package** built from one analytics report
 |---|---|---|
 | Observed facts | What the evidence shows directly. No causes | "What the evidence shows. No causes." |
 | Hypotheses | Possible explanations, untested | "Possible explanations, untested." |
-| Experiment proposals | Tests a person may choose to run | "Proposal · requires human approval · not executed" |
+| Experiment proposals | Investigations, repairs, monitoring or tests a person may choose to run | "Proposal · requires human approval · not executed" |
 
-Every item cites the finding IDs it rests on. A response is shown only after it passes 15 validation checks against the evidence. Otherwise a deterministic fallback is shown, with the reason.
+Every item cites the finding IDs it rests on. A response is shown only after it passes the evidence checks for its response schema: 17 for version 2, the current one, and 15 for version 1. Otherwise a deterministic fallback is shown, with the reason.
 
 ## Pipeline
 
@@ -28,20 +28,25 @@ report ─► evidence package ─► provider (mock | Claude) ─► JSON ─�
 | `evidence.py` | Copies finding IDs, values, periods, conversion bases, currencies and limitations from the report, verbatim. The one derived value is each comparison window's length in days, counted from the report's own dates. It never modifies the report. Shared values (conversion bases, comparison windows, extra limitations) are stated once in lookup tables (schema 1.1). The package ID is the SHA-256 of its canonical JSON |
 | `prompt.py` | The versioned system prompt (`PROMPT_VERSION`). Its rules mirror the validator's checks one for one |
 | `schema.py` | Pydantic models (strict, `extra="forbid"`, length and count limits), plus the structured-output JSON schema. The schema's enums are built from the package, so the model can only name finding IDs, metrics, bases and currencies that exist |
-| `validation.py` | The 15 checks. All or nothing |
+| `validation.py` | The evidence checks, per response schema version. All or nothing |
+| `feasibility.py` | GrowthPulse's own reference values (current baseline, historical recovery target or peer benchmark) and feasibility assessment, from the evidence |
 | `fallback.py` | Deterministic, number-free templates filled only with evidence values, and validated by the same checks |
 | `providers.py` | `MockProvider` (offline) and `AnthropicProvider` (official SDK) |
 | `pricing.py` | Versioned price table, maximum-cost bound, and cost from reported usage |
 | `ledger.py` | Local spend ledger with the $1.00 cap |
 | `audit.py` | Optional local, owner-only copies of rejected responses for review. Write-only for the application |
-| `service.py` | The orchestration, the artifact format, re-validation and the dashboard block |
+| `service.py` | The orchestration, the artifact format, re-validation, sample publication and the dashboard block |
 | `__main__.py` | The CLI |
 
 The package respects the architecture test. `ai_analysis` imports no connector, persistence, pipeline, dashboard or credentials code. The dashboard builder (`frontend/tools/`, outside the package) is what connects reports to insights.
 
 ## Validation design
 
-The checks are listed in `CHECKS`. Any violation rejects the whole response, records the check, the path and a short reason (never the rejected text), and shows the fallback.
+The checks are listed per response schema in `CHECKS_BY_VERSION`. Version 1 runs the 15 below. Version 2 adds two:
+- `measurement_repair_first`;
+- `experiment_design_consistent`.
+
+They're described under [Experiment measurement quality](#experiment-measurement-quality). Any violation rejects the whole response, records the check, the path and a short reason (never the rejected text), and shows the fallback.
 
 | Check | Rule |
 |---|---|
@@ -84,9 +89,44 @@ Diagnostics run only after a number has been rejected, so they never change what
 - **Default:** `auto` enables it only for `APP_ENV=local` outside CI. The CI workflow sets `APP_ENV=ci`.
 - **Never read back:** nothing in the application reads it. The dashboard builder reads only `docs/samples/ai_insights/` and re-validates what it finds, so an audited response can't bypass validation. The CLI prints diagnostics, never the rejected text.
 
-The model never states the experiment baseline as a number. It names a finding and either `current_value` or `baseline_value`, and the value shown comes from the evidence. Durations live in a structured field, not in prose. Attribution and platform limits come from the package, not from the model, so they're always shown.
+The model never states an experiment's baseline as a number. It names a finding, and GrowthPulse shows that finding's values from the evidence. Durations live in a structured field, not in prose. Attribution and platform limits come from the package, not from the model, so they're always shown.
 
-The dashboard builder **re-validates** every stored artifact against a freshly built package. An artifact is rejected if it's for another report, built from different evidence, edited after generation, or of an unknown version. In each case the fallback is shown.
+The dashboard builder **re-validates** every stored artifact against a freshly built package, under the response schema it was generated with. An artifact is rejected, and the fallback shown, if it:
+- is for another report;
+- was built from different evidence;
+- was edited after generation;
+- has an unknown version;
+- claims a newer schema than its content satisfies.
+
+## Experiment measurement quality
+
+**Response schema 2** (`schema.py`, prompt `insights-2026-11-12.3`) makes every experiment state the following.
+
+| Field | Rule |
+|---|---|
+| `experiment_type` | `diagnostic_investigation` (find the cause, no test arms), `measurement_repair` (fix and verify tracking), `monitoring` (watch, no intervention) or `randomized_experiment` (a controlled split) |
+| `success_criteria` | In words. Numbers only from the cited evidence (`numbers_supported` applies). No sample sizes, power or certainty |
+| `guardrail_metrics` | One to four metrics from a fixed list, never the target metric (`experiment_design_consistent`) |
+| `requires_measurement_repair_first` | Must be true for a `randomized_experiment` or `monitoring` proposal on any campaign with spend and no conversions, a possible tracking fault (`measurement_repair_first`) |
+
+The model may no longer choose which value is the "baseline". **GrowthPulse derives the reference values** from the experiment's baseline finding:
+- **Current baseline:** the target metric in the finding's current window, with its period and currency.
+- **Historical recovery target:** its value in the earlier window, when the finding compares the campaign with its own history. It's labelled as a level that a recovery isn't guaranteed to reach.
+- **Peer benchmark:** used instead when the finding compares with a peer median. It's never presented as the campaign's own history.
+
+**Feasibility** (`feasibility.py`) is computed by GrowthPulse, not written by the model, and labelled that way on screen.
+
+| Case | Assessment |
+|---|---|
+| Investigation, measurement repair or monitoring | No test arms, so no sample size applies. Volume is still shown |
+| Randomized test of conversion rate | Clicks and conversions per arm, projected from the current window's daily average. Then the minimum detectable relative change from a two-proportion normal approximation, with every assumption listed: an even random split, independent clicks, two-sided 5% significance, 80% power, and a stable control rate. It's compared with the gap to the historical level: `adequate_for_full_recovery_only` or `underpowered_for_full_recovery` |
+| Randomized test of a ratio metric (cost per conversion, ROAS) | `not_assessable`. The conversion volume per arm is shown, but no power or detectable change: the variance it needs isn't in the evidence |
+| Fewer than 10 expected events per arm, a rate of 0 or 1, or missing volume | `not_assessable`, with the reason |
+| Any performance test on a campaign with a possible tracking fault | `interpretation_blocked_until_measurement_repair`, shown as "Blocked until tracking repair is verified" |
+
+**Legacy (schema 1) artifacts** keep exactly their original validation, the 15 checks they passed, and are never re-labelled as passing schema 2. Their experiments appear as **legacy advisory proposals**:
+- The type, success criteria and guardrails are marked "Not stated".
+- GrowthPulse's reference values and feasibility appear beside them, as a separate assessment derived from the evidence. A legacy proposal is assessed as a two-arm split, as its text describes, and that assumption is stated.
 
 ## Cost and budget design
 
@@ -128,7 +168,7 @@ For the sample report the maximum is 31,411 input + 10,000 output tokens = **$0.
 - The budget is `AI_BUDGET_USD`, at most **$1.00** (`AI_BUDGET_CEILING_USD`). Settings can lower it. Raising it needs a code change.
 - **No retries:** the SDK client uses `max_retries=0`, and the pipeline makes one request per run.
 
-**The ledger is not the account balance.** It's GrowthPulse's own estimate at list prices. GrowthPulse doesn't read the Anthropic Console, call billing or Admin APIs, or need an Admin API key. The dashboard shows the account balance only as a **dated manual snapshot** ($2.84 on 12 Nov 2026, reported by the account owner). That snapshot is never reconciled with the ledger.
+**The ledger is not the account balance.** It's GrowthPulse's own estimate at list prices. GrowthPulse doesn't read the Anthropic Console, call billing or Admin APIs, or need an Admin API key. The public dashboard shows only the $1.00 cap and the published sample's estimated generation cost. Ledger details and the account balance stay off it.
 
 ## Credentials
 
@@ -146,7 +186,7 @@ For the sample report the maximum is 31,411 input + 10,000 output tokens = **$0.
 | Network | None | One streamed `messages` request |
 | Cost | $0, ledger untouched | Reserved, then reconciled |
 | Requires | Nothing | **Every gate:**<br>• the `--live` flag<br>• `AI_LIVE_CALLS_ENABLED=true`<br>• `ANTHROPIC_API_KEY` in the environment<br>• `--confirm-max-cost` ≥ the computed maximum<br>• a readable ledger that doesn't need review and has room for the reservation |
-| Dashboard label | "Offline mock provider: deterministic template content, not Claude output" | "Claude (Anthropic API), pre-generated and validated" |
+| Dashboard label | "Offline mock provider: deterministic template content, not Claude output" | "AI-generated by Claude: a static, previously generated sample" |
 
 The gates are checked in order before a provider object exists. Live request parameters:
 - `model=claude-opus-5-5`;
@@ -160,9 +200,15 @@ Three things are deliberately left unset:
 - **`tool_choice`.** Forced tool choice returns a 400 on this model.
 - **Server-side model fallbacks.** A fallback model would bill at a price the ledger doesn't hold.
 
-The dashboard never runs inference. It shows a pre-generated artifact from `docs/samples/ai_insights/<report_id>.json` after re-validating it, or the fallback. Today:
-- the sample client (`feb1e176…`) shows a **mock** artifact;
-- the other two clients show the **fallback**.
+The dashboard never runs inference. It shows a published sample from `docs/samples/ai_insights/<report_id>.json` after re-validating it, or the fallback. Today:
+- the sample client (`feb1e176…`) shows the **published Claude sample** (response schema 1, legacy proposals);
+- the other two clients show the **fallback** (schema 2).
+
+**Publishing a sample** (`publish`) has no API call. It takes a validated live artifact, re-validates it under its own schema, and writes a sanitised copy:
+- **Kept unchanged:** the model output.
+- **Kept for labelling:** report and evidence IDs, prompt and pricing versions, generation time, model, the estimated cost and token usage, and the SHA-256 of the source artifact.
+- **Dropped:** request and message IDs, the reservation, the ledger snapshot and the rejection-audit record.
+- **Refused:** anything containing credential-like text, mock or fallback artifacts, and any artifact that doesn't re-validate.
 
 ## Settings
 
@@ -191,6 +237,11 @@ uv run python -m growthpulse_ai.ai_analysis generate \
   --report docs/samples/synthetic_analytics_report.json \
   --out docs/samples/ai_insights/feb1e17675c362408a69b029c0f932a347e2c28618880f63ec33bbbd82e4e601.json
 
+# Publish a validated live artifact as a sanitised static sample (no API call)
+uv run python -m growthpulse_ai.ai_analysis publish --artifact tmp/live_artifact_2.json \
+  --report docs/samples/synthetic_analytics_report.json \
+  --out docs/samples/ai_insights/feb1e17675c362408a69b029c0f932a347e2c28618880f63ec33bbbd82e4e601.json
+
 # Ledger status (local estimate, not the account balance)
 uv run python -m growthpulse_ai.ai_analysis ledger
 
@@ -202,7 +253,7 @@ Exit codes: `0` means validated, `2` means blocked before any call, and `3` mean
 
 ## A controlled live test
 
-**Each run needs the project owner's approval.** It makes one request, with no retries, at a maximum of **$0.392761**. The first run cost an estimated $0.202444. Most of that was output: 6,984 tokens including thinking, against 15,691 input tokens.
+**Each run needs the project owner's approval.** It makes one request, with no retries. The maximum is **$0.404080** under prompt `.3` and response schema 2: 33,469 input and 10,000 output tokens. It was $0.392761 under prompt `.2`. Two runs so far cost an estimated $0.348568, leaving $0.651432 of the $1.00 cap.
 
 1. Check the prices in `pricing.py` against the pricing page.
 2. Put the key in the environment of one shell only, typed at a hidden prompt so it stays out of shell history and logs:
@@ -219,24 +270,25 @@ Exit codes: `0` means validated, `2` means blocked before any call, and `3` mean
    ```bash
    uv run python -m growthpulse_ai.ai_analysis generate \
      --report docs/samples/synthetic_analytics_report.json \
-     --out tmp/live_artifact.json --live --confirm-max-cost 0.40
+     --out tmp/live_artifact.json --live --confirm-max-cost 0.41
    ```
 5. Run `unset ANTHROPIC_API_KEY AI_LIVE_CALLS_ENABLED`. Then compare the ledger's estimate with the Anthropic Console's usage page: they're expected to differ slightly, and neither is assumed to equal the other.
 6. Review the artifact.
-   - If the outcome is `validated` and the content is acceptable, move it to `docs/samples/ai_insights/<report_id>.json`, then regenerate the dashboard data.
+   - If the outcome is `validated` and the content is acceptable, `publish` it to `docs/samples/ai_insights/<report_id>.json`, then regenerate the dashboard data.
    - If the outcome is `fallback`, the reasons are listed, and nothing reaches the dashboard.
 
 ## Live test record
 
-| | First live test, 12 Nov 2026 |
-|---|---|
-| Request | One `claude-opus-5-5` request on the synthetic sample report, no retries. Message `msg_011CgyJbJd92Q9pR8AwZXToL` |
-| Prices | Checked against Anthropic's pricing and models pages on the day. They matched `2026-11-12.1` |
-| Usage | 15,691 input + 6,984 output tokens. No cache tokens and no price modifiers |
-| Estimated cost | $0.202444 (reserved $0.424540). The ledger holds $0.202444 committed of $1.00 |
-| Validation | Rejected. `numbers_supported` failed twice at `observed_facts[5].statement`, and the other 14 checks passed. The fallback was used and nothing was published |
-| Raw response | Discarded. The rejection audit didn't exist yet |
-| Likely cause | Found offline: the comparison window lengths ("the latest 10 days versus the first 10 days") weren't in the evidence, so they failed twice in one statement. They are evidence from schema 1.1 on. `tests/test_ai_diagnostics.py` reproduces this. It's a hypothesis, because the response itself wasn't kept |
+| | First live test | Second live test |
+|---|---|---|
+| Date and setup | 12 Nov 2026. Prompt `.1`, evidence package 1.0 | 12 Nov 2026. Prompt `.2`, evidence package 1.1, response schema 1 |
+| Request | One `claude-opus-5-5` request on the synthetic sample report, no retries | Same |
+| Usage | 15,691 input + 6,984 output tokens | 13,626 input + 4,581 output tokens |
+| Estimated cost | $0.202444 (reserved $0.424540) | $0.146124 (reserved $0.392761). Total so far $0.348568 |
+| Validation | **Rejected.** `numbers_supported` failed twice in one fact, and nothing was published | **Passed all 15 checks.** Published as the static sample |
+| Notes | Likely cause, found offline: the comparison window lengths weren't evidence. That's fixed, and `tests/test_ai_diagnostics.py` reproduces it. It's a hypothesis, because the response wasn't kept | The review found sound facts and hypotheses, but weak measurement design. That led to response schema 2 and GrowthPulse's feasibility assessment |
+
+Prices were checked against Anthropic's pricing and models pages on the day, and matched `2026-11-12.1`. Neither run had cache tokens or price modifiers.
 
 ## Limitations
 
@@ -245,7 +297,8 @@ Exit codes: `0` means validated, `2` means blocked before any call, and `3` mean
   - Spelled-out numbers ("two weeks") aren't caught.
   - A causal claim phrased without the listed words could pass as a fact.
   - Campaign detection relies on the `Platform | Product | Market` naming convention.
-- **One live response so far, and it was rejected.** The fix for its likely cause has been verified only offline. Prompt and validator changes need a new `PROMPT_VERSION`.
+- **One validated live response, under schema 1.** Response schema 2 and prompt `.3` haven't been tried on a live model yet. The published sample's experiments are therefore legacy proposals.
+- **Approximate feasibility.** It uses the current window's daily average and a normal approximation. It doesn't model seasonality, ramp-up or learning periods, or platform-side experiment mechanics, and gives nothing for ratio metrics.
 - **Loose input bound.** The byte-count bound makes reservations about three times the likely input cost. That is safe, but uses budget headroom: two held requests would exhaust $1.00.
 - **Stale reservations.** A reservation left open by a crash stays counted forever. There's no tool to resolve it, by design, and editing the ledger is a manual, reviewed act.
 - **POSIX only.** The ledger is local to one machine and needs POSIX `flock`. It isn't shared between machines or CI.

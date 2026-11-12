@@ -1,7 +1,8 @@
 """Check a provider's response against the evidence package before anyone sees it.
 
 A response is accepted whole or rejected whole: one violation anywhere means the
-deterministic fallback is shown instead. Every check is listed in CHECKS, and each
+deterministic fallback is shown instead. Every check is listed per response schema
+version in CHECKS_BY_VERSION (15 for version 1, 17 for version 2), and each
 violation names its check, where it was found, and why, without echoing the text.
 
 Number rule: every number written in prose must be a value from the evidence of the
@@ -18,9 +19,17 @@ from decimal import Decimal, InvalidOperation
 from pydantic import ValidationError
 
 from .evidence import EvidencePackage
-from .schema import ExperimentProposal, InsightResponse
+from .feasibility import tracking_risk_campaigns
+from .schema import (
+    RESPONSE_MODELS,
+    RESPONSE_SCHEMA_VERSION,
+    ExperimentProposal,
+    ExperimentProposalV1,
+    InsightResponse,
+    InsightResponseV1,
+)
 
-CHECKS = (
+CHECKS_V1 = (
     "schema",
     "finding_ids_exist",
     "numbers_supported",
@@ -37,6 +46,14 @@ CHECKS = (
     "no_execution_claims",
     "no_duplicates",
 )
+# Version 2 adds experiment-design rules. Version 1 artifacts keep exactly CHECKS_V1.
+CHECKS = (
+    *CHECKS_V1,
+    "measurement_repair_first",
+    "experiment_design_consistent",
+)
+CHECKS_BY_VERSION = {"1": CHECKS_V1, "2": CHECKS}
+PERFORMANCE_TYPES = frozenset({"randomized_experiment", "monitoring"})
 
 CURRENCY_SYMBOLS = {"£": "GBP", "€": "EUR", "$": "USD"}
 CURRENCY_CODES = {"GBP", "EUR", "USD", "CHF", "AUD", "CAD", "JPY", "SEK", "NOK", "DKK", "PLN"}
@@ -91,7 +108,7 @@ class Violation:
 
 @dataclass(frozen=True)
 class ValidationResult:
-    response: InsightResponse | None
+    response: InsightResponse | InsightResponseV1 | None
     violations: tuple[Violation, ...]
 
     @property
@@ -320,6 +337,7 @@ class _Checker:
         for name in package.campaign_names:
             names |= {name, name.removeprefix("[SYNTHETIC] ")}
         self.campaign_names = sorted(names, key=len, reverse=True)
+        self.tracking_risk = tracking_risk_campaigns(package)
 
     def flag(self, check: str, path: str, detail: str) -> None:
         self.violations.append(Violation(check, path, detail))
@@ -384,7 +402,12 @@ class _Checker:
                 self.flag("no_execution_claims", path, "describes a change as made or applied")
                 break
 
-    def experiment(self, path: str, experiment: ExperimentProposal, findings: list[dict]) -> None:
+    def experiment(
+        self,
+        path: str,
+        experiment: ExperimentProposal | ExperimentProposalV1,
+        findings: list[dict],
+    ) -> None:
         if experiment.baseline_finding_id not in experiment.finding_ids:
             self.flag("experiment_baseline_cited", path, "baseline finding is not cited")
         baseline = self.findings.get(experiment.baseline_finding_id)
@@ -420,13 +443,38 @@ class _Checker:
         for name in ("risks", "assumptions"):
             for index, value in enumerate(getattr(experiment, name)):
                 self.text(f"{path}.{name}[{index}]", value, findings)
+        if isinstance(experiment, ExperimentProposal):
+            self.experiment_design(path, experiment, findings)
+
+    def experiment_design(
+        self, path: str, experiment: ExperimentProposal, findings: list[dict]
+    ) -> None:
+        """Version 2 rules: success criteria, guardrails and the repair-first order."""
+        self.text(f"{path}.success_criteria", experiment.success_criteria, findings)
+        guardrails = experiment.guardrail_metrics
+        if experiment.target_metric in guardrails:
+            self.flag("experiment_design_consistent", path, "a guardrail repeats the target metric")
+        if len(set(guardrails)) != len(guardrails):
+            self.flag("experiment_design_consistent", path, "a guardrail is listed twice")
+        risky = {f["campaign_id"] for f in findings} & self.tracking_risk
+        if (
+            risky
+            and experiment.experiment_type in PERFORMANCE_TYPES
+            and not experiment.requires_measurement_repair_first
+        ):
+            self.flag(
+                "measurement_repair_first",
+                path,
+                "a cited campaign shows a possible tracking fault, so a measurement repair "
+                "must be verified before this performance test",
+            )
 
 
 def _normalise(text: str) -> str:
     return " ".join(re.sub(r"[^a-z0-9]+", " ", text.lower()).split())
 
 
-def _duplicates(checker: _Checker, response: InsightResponse) -> None:
+def _duplicates(checker: _Checker, response: InsightResponse | InsightResponseV1) -> None:
     for section in ("observed_facts", "hypotheses"):
         seen: set[str] = set()
         for index, item in enumerate(getattr(response, section)):
@@ -441,7 +489,8 @@ def _duplicates(checker: _Checker, response: InsightResponse) -> None:
             item.target_metric,
             frozenset(item.finding_ids),
             item.baseline_finding_id,
-            item.baseline_reference,
+            getattr(item, "baseline_reference", None),
+            getattr(item, "experiment_type", None),
         )
         if _normalise(item.title) in titles or design in designs:
             checker.flag("no_duplicates", f"experiments[{index}]", "repeats an earlier proposal")
@@ -449,10 +498,16 @@ def _duplicates(checker: _Checker, response: InsightResponse) -> None:
         designs.add(design)
 
 
-def validate_response(raw: object, package: EvidencePackage) -> ValidationResult:
-    """Validate a parsed JSON response. Never raises for bad input; returns violations."""
+def validate_response(
+    raw: object, package: EvidencePackage, schema_version: str = RESPONSE_SCHEMA_VERSION
+) -> ValidationResult:
+    """Validate a parsed JSON response against one schema version's rules. Never raises
+    for bad input; returns violations. Version 1 runs exactly its original 15 checks."""
+    model = RESPONSE_MODELS.get(schema_version)
+    if model is None:
+        return ValidationResult(None, (Violation("schema", "$", "unsupported_version"),))
     try:
-        response = InsightResponse.model_validate(raw)
+        response = model.model_validate(raw)
     except ValidationError as error:
         violations = tuple(
             Violation("schema", ".".join(map(str, item["loc"])) or "$", item["type"])

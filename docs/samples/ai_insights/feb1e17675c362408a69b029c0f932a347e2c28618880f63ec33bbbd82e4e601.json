@@ -1,591 +1,172 @@
 {
  "artifact_schema_version": "1.0",
  "cost": {
-  "estimated_usd": "0",
-  "ledger_after": null,
-  "max_input_tokens": 31411,
-  "max_output_tokens": 10000,
-  "request_id": null,
-  "reserved_max_usd": null,
-  "status": "mock_no_charge",
+  "estimated_usd": "0.146124",
+  "status": "settled",
   "usage": {
    "cache_creation_1h_input_tokens": 0,
    "cache_creation_5m_input_tokens": 0,
    "cache_read_input_tokens": 0,
-   "input_tokens": 0,
-   "output_tokens": 0
+   "input_tokens": 13626,
+   "output_tokens": 4581
   }
  },
- "generated_at": "2026-11-12T16:45:58+00:00",
- "insights": {
-  "experiments": [
-   {
-    "approval": "not_requested",
-    "assumptions": [
-     "Conversion tracking stays unchanged for the whole test."
-    ],
-    "attribution": {
-     "attribution_model": "data_driven",
-     "basis_id": "7eb406696ae07e23",
-     "click_window_days": 30,
-     "event_name": "Scan booking request submitted",
-     "platform": "google_ads",
-     "stage": "booking_request",
-     "view_window_days": null
-    },
-    "baseline": {
-     "baseline_kind": "baseline_period",
-     "currency": "GBP",
-     "finding_id": "1438d8f36e01b8a95910befd948a875b51acf32b6a31bf4618b889e0d5cfe782",
-     "period": {
-      "end": "2026-10-30",
-      "start": "2026-10-21"
-     },
-     "reference": "current_value",
-     "value": "108.87786653"
-    },
-    "citations": [
-     {
-      "campaign_name": "[SYNTHETIC] Search | MRI | London",
-      "comparison_label": "latest_10_vs_first_10",
-      "currency": "GBP",
-      "direction": "adverse",
-      "finding_id": "1438d8f36e01b8a95910befd948a875b51acf32b6a31bf4618b889e0d5cfe782",
-      "metric": "cost_per_platform_attributed_conversion",
-      "metric_label": "Cost per platform-attributed conversion (proxy, not true CAC)",
-      "platform": "google_ads",
-      "severity": "high"
-     }
-    ],
-    "duration_days": 14,
-    "executed": false,
-    "hypothesis": "Auction pressure or a bid-strategy mismatch may be raising the cost of each platform-attributed conversion on Search | MRI | London.",
-    "kind": "problem",
-    "measurement_method": "Compare cost per platform-attributed conversion between the two arms on the same conversion basis, over the same dates.",
-    "problem_statement": "Cost per platform-attributed conversion (proxy, not true CAC) for Search | MRI | London moved from GBP 52.77 (2026-10-01 to 2026-10-10) to GBP 108.88 (2026-10-21 to 2026-10-30), a rise of 106.3%.",
-    "proposed_experiment": "Split Search | MRI | London traffic between the current bid strategy and one target-based alternative, using the platform's own experiment tool.",
-    "requires_human_approval": true,
-    "risks": [
-     "A learning period may depress results in the test arm early on."
-    ],
-    "status": "proposal",
-    "target_metric": "cost_per_platform_attributed_conversion",
-    "target_metric_label": "Cost per platform-attributed conversion (proxy, not true CAC)",
-    "title": "Bid-strategy split test on Search | MRI | London"
-   },
-   {
-    "approval": "not_requested",
-    "assumptions": [
-     "Pricing and offers stay unchanged during the test."
-    ],
-    "attribution": {
-     "attribution_model": "platform_windowed",
-     "basis_id": "0e839a541b0cb73c",
-     "click_window_days": 7,
-     "event_name": "Scan enquiry form submitted",
-     "platform": "meta_ads",
-     "stage": "lead",
-     "view_window_days": 1
-    },
-    "baseline": {
-     "baseline_kind": "baseline_period",
-     "currency": "GBP",
-     "finding_id": "2b53e7fc7f862dec1f01052b708140552f233807eeadf746a5cc2fe514d237b0",
-     "period": {
-      "end": "2026-10-30",
-      "start": "2026-10-21"
-     },
-     "reference": "current_value",
-     "value": "4.35466902"
-    },
-    "citations": [
-     {
-      "campaign_name": "[SYNTHETIC] Meta | CT | Prospecting",
-      "comparison_label": "latest_10_vs_first_10",
-      "currency": "GBP",
-      "direction": "adverse",
-      "finding_id": "2b53e7fc7f862dec1f01052b708140552f233807eeadf746a5cc2fe514d237b0",
-      "metric": "platform_attributed_roas",
-      "metric_label": "Platform-attributed ROAS",
-      "platform": "meta_ads",
-      "severity": "high"
-     }
-    ],
-    "duration_days": 14,
-    "executed": false,
-    "hypothesis": "Creative fatigue or a shift in audience mix may be lowering platform-attributed ROAS on Meta | CT | Prospecting.",
-    "kind": "problem",
-    "measurement_method": "Compare platform-attributed ROAS between creative sets on the same conversion basis. Platform-reported value is not realised revenue.",
-    "problem_statement": "Platform-attributed ROAS for Meta | CT | Prospecting moved from 9.66 (2026-10-01 to 2026-10-10) to 4.35 (2026-10-21 to 2026-10-30), a fall of 54.9%.",
-    "proposed_experiment": "Test fresh creatives against the current ones on Meta | CT | Prospecting, with the platform splitting traffic evenly.",
-    "requires_human_approval": true,
-    "risks": [
-     "Platform-reported conversion value may not reflect realised revenue."
-    ],
-    "status": "proposal",
-    "target_metric": "platform_attributed_roas",
-    "target_metric_label": "Platform-attributed ROAS",
-    "title": "Creative refresh test on Meta | CT | Prospecting"
-   },
-   {
-    "approval": "not_requested",
-    "assumptions": [
-     "Pricing and offers stay unchanged during the test."
-    ],
-    "attribution": {
-     "attribution_model": "data_driven",
-     "basis_id": "7eb406696ae07e23",
-     "click_window_days": 30,
-     "event_name": "Scan booking request submitted",
-     "platform": "google_ads",
-     "stage": "booking_request",
-     "view_window_days": null
-    },
-    "baseline": {
-     "baseline_kind": "baseline_period",
-     "currency": "GBP",
-     "finding_id": "53e6992cbfcc09c2782dfc31516dfe2ba54c802e4017f4fd64e17c50e235d2ab",
-     "period": {
-      "end": "2026-10-30",
-      "start": "2026-10-21"
-     },
-     "reference": "current_value",
-     "value": "3.69031438"
-    },
-    "citations": [
-     {
-      "campaign_name": "[SYNTHETIC] PMax | CT | National",
-      "comparison_label": "latest_10_vs_first_10",
-      "currency": "GBP",
-      "direction": "adverse",
-      "finding_id": "53e6992cbfcc09c2782dfc31516dfe2ba54c802e4017f4fd64e17c50e235d2ab",
-      "metric": "platform_attributed_roas",
-      "metric_label": "Platform-attributed ROAS",
-      "platform": "google_ads",
-      "severity": "high"
-     }
-    ],
-    "duration_days": 14,
-    "executed": false,
-    "hypothesis": "Creative fatigue or a shift in audience mix may be lowering platform-attributed ROAS on PMax | CT | National.",
-    "kind": "problem",
-    "measurement_method": "Compare platform-attributed ROAS between creative sets on the same conversion basis. Platform-reported value is not realised revenue.",
-    "problem_statement": "Platform-attributed ROAS for PMax | CT | National moved from 8.09 (2026-10-01 to 2026-10-10) to 3.69 (2026-10-21 to 2026-10-30), a fall of 54.4%.",
-    "proposed_experiment": "Test fresh creatives against the current ones on PMax | CT | National, with the platform splitting traffic evenly.",
-    "requires_human_approval": true,
-    "risks": [
-     "Platform-reported conversion value may not reflect realised revenue."
-    ],
-    "status": "proposal",
-    "target_metric": "platform_attributed_roas",
-    "target_metric_label": "Platform-attributed ROAS",
-    "title": "Creative refresh test on PMax | CT | National"
-   },
-   {
-    "approval": "not_requested",
-    "assumptions": [
-     "Ad targeting and bids stay unchanged while the test runs."
-    ],
-    "attribution": {
-     "attribution_model": "data_driven",
-     "basis_id": "7eb406696ae07e23",
-     "click_window_days": 30,
-     "event_name": "Scan booking request submitted",
-     "platform": "google_ads",
-     "stage": "booking_request",
-     "view_window_days": null
-    },
-    "baseline": {
-     "baseline_kind": "baseline_period",
-     "currency": "GBP",
-     "finding_id": "6935fc14c86f9830e80ef9f6556681a8db591c4333680430123ad900cc84b0b8",
-     "period": {
-      "end": "2026-10-30",
-      "start": "2026-10-21"
-     },
-     "reference": "current_value",
-     "value": "0.01298456"
-    },
-    "citations": [
-     {
-      "campaign_name": "[SYNTHETIC] PMax | CT | National",
-      "comparison_label": "latest_10_vs_first_10",
-      "currency": "GBP",
-      "direction": "adverse",
-      "finding_id": "6935fc14c86f9830e80ef9f6556681a8db591c4333680430123ad900cc84b0b8",
-      "metric": "platform_attributed_conversion_rate",
-      "metric_label": "Platform-attributed conversion rate",
-      "platform": "google_ads",
-      "severity": "high"
-     }
-    ],
-    "duration_days": 14,
-    "executed": false,
-    "hypothesis": "A change in the post-click experience may be lowering the platform-attributed conversion rate on PMax | CT | National.",
-    "kind": "problem",
-    "measurement_method": "Compare platform-attributed conversion rate between the two pages on the same conversion basis.",
-    "problem_statement": "Platform-attributed conversion rate for PMax | CT | National moved from 2.91% (2026-10-01 to 2026-10-10) to 1.30% (2026-10-21 to 2026-10-30), a fall of 55.4%.",
-    "proposed_experiment": "Send part of PMax | CT | National traffic to one landing-page variant and keep the rest on the current page.",
-    "requires_human_approval": true,
-    "risks": [
-     "Traffic may be too low for a clear result within the test window."
-    ],
-    "status": "proposal",
-    "target_metric": "platform_attributed_conversion_rate",
-    "target_metric_label": "Platform-attributed conversion rate",
-    "title": "Landing-page variant test on PMax | CT | National"
-   }
-  ],
-  "hypotheses": [
-   {
-    "citations": [
-     {
-      "campaign_name": "[SYNTHETIC] Search | MRI | London",
-      "comparison_label": "latest_10_vs_first_10",
-      "currency": "GBP",
-      "direction": "adverse",
-      "finding_id": "1438d8f36e01b8a95910befd948a875b51acf32b6a31bf4618b889e0d5cfe782",
-      "metric": "cost_per_platform_attributed_conversion",
-      "metric_label": "Cost per platform-attributed conversion (proxy, not true CAC)",
-      "platform": "google_ads",
-      "severity": "high"
-     }
-    ],
-    "statement": "Auction pressure or a bid-strategy mismatch may be raising the cost of each platform-attributed conversion on Search | MRI | London.",
-    "status": "untested"
-   },
-   {
-    "citations": [
-     {
-      "campaign_name": "[SYNTHETIC] Meta | CT | Prospecting",
-      "comparison_label": "latest_10_vs_first_10",
-      "currency": "GBP",
-      "direction": "adverse",
-      "finding_id": "2b53e7fc7f862dec1f01052b708140552f233807eeadf746a5cc2fe514d237b0",
-      "metric": "platform_attributed_roas",
-      "metric_label": "Platform-attributed ROAS",
-      "platform": "meta_ads",
-      "severity": "high"
-     }
-    ],
-    "statement": "Creative fatigue or a shift in audience mix may be lowering platform-attributed ROAS on Meta | CT | Prospecting.",
-    "status": "untested"
-   },
-   {
-    "citations": [
-     {
-      "campaign_name": "[SYNTHETIC] PMax | CT | National",
-      "comparison_label": "latest_10_vs_first_10",
-      "currency": "GBP",
-      "direction": "adverse",
-      "finding_id": "53e6992cbfcc09c2782dfc31516dfe2ba54c802e4017f4fd64e17c50e235d2ab",
-      "metric": "platform_attributed_roas",
-      "metric_label": "Platform-attributed ROAS",
-      "platform": "google_ads",
-      "severity": "high"
-     }
-    ],
-    "statement": "Creative fatigue or a shift in audience mix may be lowering platform-attributed ROAS on PMax | CT | National.",
-    "status": "untested"
-   },
-   {
-    "citations": [
-     {
-      "campaign_name": "[SYNTHETIC] PMax | CT | National",
-      "comparison_label": "latest_10_vs_first_10",
-      "currency": "GBP",
-      "direction": "adverse",
-      "finding_id": "6935fc14c86f9830e80ef9f6556681a8db591c4333680430123ad900cc84b0b8",
-      "metric": "platform_attributed_conversion_rate",
-      "metric_label": "Platform-attributed conversion rate",
-      "platform": "google_ads",
-      "severity": "high"
-     }
-    ],
-    "statement": "A change in the post-click experience may be lowering the platform-attributed conversion rate on PMax | CT | National.",
-    "status": "untested"
-   }
-  ],
-  "limitations": {
-   "attribution": [
-    "Every conversion figure is platform-attributed: each ad platform credits conversions under its own attribution model and windows. They are not verified bookings, not incremental, and not comparable across platforms or conversion bases.",
-    "Conversion value and ROAS are platform-reported, not realised revenue.",
-    "Findings come from threshold rules, not significance tests. They show what changed, not why."
-   ],
-   "model_noted": [],
-   "report": [
-    "Conversions are platform-attributed. Actual bookings and true customer acquisition cost are not available in this data.",
-    "Conversions are reported per conversion basis and are never totalled across bases.",
-    "Findings are threshold-based. No statistical significance test was performed.",
-    "Findings describe what changed and do not establish causes.",
-    "Reporting dates are in each account's own timezone.",
-    "Recent days can be restated as late conversions are reported.",
-    "Comparisons have different windows and are reported separately, not combined.",
-    "Finding groups show shared metric inputs and do not establish causes.",
-    "A persistence assessment never confirms that an issue has resolved."
-   ]
-  },
-  "observed_facts": [
-   {
-    "citations": [
-     {
-      "campaign_name": "[SYNTHETIC] Search | MRI | London",
-      "comparison_label": "latest_10_vs_first_10",
-      "currency": "GBP",
-      "direction": "adverse",
-      "finding_id": "1438d8f36e01b8a95910befd948a875b51acf32b6a31bf4618b889e0d5cfe782",
-      "metric": "cost_per_platform_attributed_conversion",
-      "metric_label": "Cost per platform-attributed conversion (proxy, not true CAC)",
-      "platform": "google_ads",
-      "severity": "high"
-     }
-    ],
-    "statement": "Cost per platform-attributed conversion (proxy, not true CAC) for Search | MRI | London moved from GBP 52.77 (2026-10-01 to 2026-10-10) to GBP 108.88 (2026-10-21 to 2026-10-30), a rise of 106.3%."
-   },
-   {
-    "citations": [
-     {
-      "campaign_name": "[SYNTHETIC] Meta | CT | Prospecting",
-      "comparison_label": "latest_10_vs_first_10",
-      "currency": "GBP",
-      "direction": "adverse",
-      "finding_id": "2b53e7fc7f862dec1f01052b708140552f233807eeadf746a5cc2fe514d237b0",
-      "metric": "platform_attributed_roas",
-      "metric_label": "Platform-attributed ROAS",
-      "platform": "meta_ads",
-      "severity": "high"
-     }
-    ],
-    "statement": "Platform-attributed ROAS for Meta | CT | Prospecting moved from 9.66 (2026-10-01 to 2026-10-10) to 4.35 (2026-10-21 to 2026-10-30), a fall of 54.9%."
-   },
-   {
-    "citations": [
-     {
-      "campaign_name": "[SYNTHETIC] PMax | CT | National",
-      "comparison_label": "latest_10_vs_first_10",
-      "currency": "GBP",
-      "direction": "adverse",
-      "finding_id": "53e6992cbfcc09c2782dfc31516dfe2ba54c802e4017f4fd64e17c50e235d2ab",
-      "metric": "platform_attributed_roas",
-      "metric_label": "Platform-attributed ROAS",
-      "platform": "google_ads",
-      "severity": "high"
-     }
-    ],
-    "statement": "Platform-attributed ROAS for PMax | CT | National moved from 8.09 (2026-10-01 to 2026-10-10) to 3.69 (2026-10-21 to 2026-10-30), a fall of 54.4%."
-   },
-   {
-    "citations": [
-     {
-      "campaign_name": "[SYNTHETIC] PMax | CT | National",
-      "comparison_label": "latest_10_vs_first_10",
-      "currency": "GBP",
-      "direction": "adverse",
-      "finding_id": "6935fc14c86f9830e80ef9f6556681a8db591c4333680430123ad900cc84b0b8",
-      "metric": "platform_attributed_conversion_rate",
-      "metric_label": "Platform-attributed conversion rate",
-      "platform": "google_ads",
-      "severity": "high"
-     }
-    ],
-    "statement": "Platform-attributed conversion rate for PMax | CT | National moved from 2.91% (2026-10-01 to 2026-10-10) to 1.30% (2026-10-21 to 2026-10-30), a fall of 55.4%."
-   },
-   {
-    "citations": [
-     {
-      "campaign_name": "[SYNTHETIC] Meta | CT | Prospecting",
-      "comparison_label": "latest_10_vs_first_10",
-      "currency": "GBP",
-      "direction": "adverse",
-      "finding_id": "7e45afabb1ebc5819d8a19612242685bf90c66b9f55dfff0ef07cd292f7585ad",
-      "metric": "platform_attributed_conversions",
-      "metric_label": "Platform-attributed conversions",
-      "platform": "meta_ads",
-      "severity": "high"
-     }
-    ],
-    "statement": "Meta | CT | Prospecting spent GBP 910.80 with no platform-attributed conversions from 2026-10-21 to 2026-10-26."
-   },
-   {
-    "citations": [
-     {
-      "campaign_name": "[SYNTHETIC] Meta | CT | Prospecting",
-      "comparison_label": "latest_10_vs_first_10",
-      "currency": "GBP",
-      "direction": "adverse",
-      "finding_id": "85c2b681b099bdb0ed06fb9dc08303c953fe7fa4331e8ea9bdb64b1dd95f458c",
-      "metric": "cost_per_platform_attributed_conversion",
-      "metric_label": "Cost per platform-attributed conversion (proxy, not true CAC)",
-      "platform": "meta_ads",
-      "severity": "high"
-     }
-    ],
-    "statement": "Cost per platform-attributed conversion (proxy, not true CAC) for Meta | CT | Prospecting moved from GBP 40.06 (2026-10-01 to 2026-10-10) to GBP 93.62 (2026-10-21 to 2026-10-30), a rise of 133.7%."
-   }
-  ]
- },
+ "generated_at": "2026-11-12T17:12:38+00:00",
  "model_output": {
   "experiments": [
    {
     "assumptions": [
-     "Conversion tracking stays unchanged for the whole test."
+     "Click volume stays broadly similar during the test.",
+     "The enquiry form event definition stays unchanged for the whole test."
+    ],
+    "attribution_basis_id": "0e839a541b0cb73c",
+    "baseline_finding_id": "f7bd2e3bdbc4a833591993905d74563d85d955120e9f6b4d12c06bf8b3064079",
+    "baseline_reference": "baseline_value",
+    "currency": "GBP",
+    "duration_days": 21,
+    "finding_ids": [
+     "f7bd2e3bdbc4a833591993905d74563d85d955120e9f6b4d12c06bf8b3064079",
+     "7e45afabb1ebc5819d8a19612242685bf90c66b9f55dfff0ef07cd292f7585ad",
+     "85c2b681b099bdb0ed06fb9dc08303c953fe7fa4331e8ea9bdb64b1dd95f458c"
+    ],
+    "hypothesis": "If the enquiry form event is verified as firing correctly and a simplified landing page variant is tested, the platform-attributed conversion rate may recover toward its earlier level of 2.1%.",
+    "kind": "problem",
+    "measurement_method": "Compare the platform-attributed conversion rate of each variant on the same Meta conversion basis, allowing for late-reported conversions before reading the result.",
+    "problem_statement": "For [SYNTHETIC] Meta | CT | Prospecting, platform-attributed conversion rate fell from 2.1% to 0.94%, and there was a run with no attributed conversions from 2026-10-21 to 2026-10-26.",
+    "proposed_experiment": "First check that the enquiry form submission event fires end to end. Then split traffic between the current landing page and a simplified form variant.",
+    "requires_human_approval": true,
+    "risks": [
+     "If a tracking fault is found, data from before the fix may not be comparable with data after it.",
+     "Meta may restate recent days as late conversions are reported, which could shift the result."
+    ],
+    "target_metric": "platform_attributed_conversion_rate",
+    "title": "Audit enquiry form tracking and test a landing page variant for Meta CT Prospecting"
+   },
+   {
+    "assumptions": [
+     "The data-driven attribution settings stay unchanged during the test."
     ],
     "attribution_basis_id": "7eb406696ae07e23",
     "baseline_finding_id": "1438d8f36e01b8a95910befd948a875b51acf32b6a31bf4618b889e0d5cfe782",
-    "baseline_reference": "current_value",
+    "baseline_reference": "baseline_value",
     "currency": "GBP",
-    "duration_days": 14,
+    "duration_days": 28,
     "finding_ids": [
-     "1438d8f36e01b8a95910befd948a875b51acf32b6a31bf4618b889e0d5cfe782"
+     "1438d8f36e01b8a95910befd948a875b51acf32b6a31bf4618b889e0d5cfe782",
+     "97ef5a009d16001f436611be9d4696db3579547b242c27fded74bf0079c94d40"
     ],
-    "hypothesis": "Auction pressure or a bid-strategy mismatch may be raising the cost of each platform-attributed conversion on Search | MRI | London.",
+    "hypothesis": "Moving budget away from high-cost, low-converting search terms may bring cost per platform-attributed conversion back toward GBP 52.77.",
     "kind": "problem",
-    "measurement_method": "Compare cost per platform-attributed conversion between the two arms on the same conversion basis, over the same dates.",
-    "problem_statement": "Cost per platform-attributed conversion (proxy, not true CAC) for Search | MRI | London moved from GBP 52.77 (2026-10-01 to 2026-10-10) to GBP 108.88 (2026-10-21 to 2026-10-30), a rise of 106.3%.",
-    "proposed_experiment": "Split Search | MRI | London traffic between the current bid strategy and one target-based alternative, using the platform's own experiment tool.",
+    "measurement_method": "Compare cost per platform-attributed conversion between the experiment and control arms on the same Google Ads booking-request basis.",
+    "problem_statement": "For [SYNTHETIC] Search | MRI | London, cost per platform-attributed conversion rose from GBP 52.77 to GBP 108.88, and ROAS fell from 6.83 to 3.31.",
+    "proposed_experiment": "Run a campaign experiment that tightens match types and adds negative keywords for low-performing queries, compared against the unchanged campaign.",
     "requires_human_approval": true,
     "risks": [
-     "A learning period may depress results in the test arm early on."
+     "Narrower targeting could reduce booking-request volume.",
+     "Changes in auction competition during the test could confound the comparison."
     ],
     "target_metric": "cost_per_platform_attributed_conversion",
-    "title": "Bid-strategy split test on Search | MRI | London"
+    "title": "Test keyword and bid restructuring on Search MRI London"
    },
    {
     "assumptions": [
-     "Pricing and offers stay unchanged during the test."
-    ],
-    "attribution_basis_id": "0e839a541b0cb73c",
-    "baseline_finding_id": "2b53e7fc7f862dec1f01052b708140552f233807eeadf746a5cc2fe514d237b0",
-    "baseline_reference": "current_value",
-    "currency": "GBP",
-    "duration_days": 14,
-    "finding_ids": [
-     "2b53e7fc7f862dec1f01052b708140552f233807eeadf746a5cc2fe514d237b0"
-    ],
-    "hypothesis": "Creative fatigue or a shift in audience mix may be lowering platform-attributed ROAS on Meta | CT | Prospecting.",
-    "kind": "problem",
-    "measurement_method": "Compare platform-attributed ROAS between creative sets on the same conversion basis. Platform-reported value is not realised revenue.",
-    "problem_statement": "Platform-attributed ROAS for Meta | CT | Prospecting moved from 9.66 (2026-10-01 to 2026-10-10) to 4.35 (2026-10-21 to 2026-10-30), a fall of 54.9%.",
-    "proposed_experiment": "Test fresh creatives against the current ones on Meta | CT | Prospecting, with the platform splitting traffic evenly.",
-    "requires_human_approval": true,
-    "risks": [
-     "Platform-reported conversion value may not reflect realised revenue."
-    ],
-    "target_metric": "platform_attributed_roas",
-    "title": "Creative refresh test on Meta | CT | Prospecting"
-   },
-   {
-    "assumptions": [
-     "Pricing and offers stay unchanged during the test."
-    ],
-    "attribution_basis_id": "7eb406696ae07e23",
-    "baseline_finding_id": "53e6992cbfcc09c2782dfc31516dfe2ba54c802e4017f4fd64e17c50e235d2ab",
-    "baseline_reference": "current_value",
-    "currency": "GBP",
-    "duration_days": 14,
-    "finding_ids": [
-     "53e6992cbfcc09c2782dfc31516dfe2ba54c802e4017f4fd64e17c50e235d2ab"
-    ],
-    "hypothesis": "Creative fatigue or a shift in audience mix may be lowering platform-attributed ROAS on PMax | CT | National.",
-    "kind": "problem",
-    "measurement_method": "Compare platform-attributed ROAS between creative sets on the same conversion basis. Platform-reported value is not realised revenue.",
-    "problem_statement": "Platform-attributed ROAS for PMax | CT | National moved from 8.09 (2026-10-01 to 2026-10-10) to 3.69 (2026-10-21 to 2026-10-30), a fall of 54.4%.",
-    "proposed_experiment": "Test fresh creatives against the current ones on PMax | CT | National, with the platform splitting traffic evenly.",
-    "requires_human_approval": true,
-    "risks": [
-     "Platform-reported conversion value may not reflect realised revenue."
-    ],
-    "target_metric": "platform_attributed_roas",
-    "title": "Creative refresh test on PMax | CT | National"
-   },
-   {
-    "assumptions": [
-     "Ad targeting and bids stay unchanged while the test runs."
+     "Budget levels stay comparable across the test and control arms."
     ],
     "attribution_basis_id": "7eb406696ae07e23",
     "baseline_finding_id": "6935fc14c86f9830e80ef9f6556681a8db591c4333680430123ad900cc84b0b8",
-    "baseline_reference": "current_value",
+    "baseline_reference": "baseline_value",
     "currency": "GBP",
-    "duration_days": 14,
+    "duration_days": 28,
     "finding_ids": [
-     "6935fc14c86f9830e80ef9f6556681a8db591c4333680430123ad900cc84b0b8"
+     "6935fc14c86f9830e80ef9f6556681a8db591c4333680430123ad900cc84b0b8",
+     "53e6992cbfcc09c2782dfc31516dfe2ba54c802e4017f4fd64e17c50e235d2ab",
+     "a5823399d56a5043f8e8a185ab2dc73ddcfbf29ac2e652bcc1c1f1e013761903"
     ],
-    "hypothesis": "A change in the post-click experience may be lowering the platform-attributed conversion rate on PMax | CT | National.",
+    "hypothesis": "Refreshed asset groups and a clearer booking-request landing page may raise the platform-attributed conversion rate toward 2.9%.",
     "kind": "problem",
-    "measurement_method": "Compare platform-attributed conversion rate between the two pages on the same conversion basis.",
-    "problem_statement": "Platform-attributed conversion rate for PMax | CT | National moved from 2.91% (2026-10-01 to 2026-10-10) to 1.30% (2026-10-21 to 2026-10-30), a fall of 55.4%.",
-    "proposed_experiment": "Send part of PMax | CT | National traffic to one landing-page variant and keep the rest on the current page.",
+    "measurement_method": "Compare platform-attributed conversion rate between the test and control arms on the same Google Ads booking-request basis.",
+    "problem_statement": "For [SYNTHETIC] PMax | CT | National, platform-attributed conversion rate fell from 2.9% to 1.3% while clicks went from 1671 to 1749.",
+    "proposed_experiment": "Test a refreshed asset group with a dedicated booking-request landing page against the current setup, using a platform experiment split.",
     "requires_human_approval": true,
     "risks": [
-     "Traffic may be too low for a clear result within the test window."
+     "The PMax learning phase may depress early results.",
+     "Placement mix may shift in ways the analyst cannot see."
     ],
     "target_metric": "platform_attributed_conversion_rate",
-    "title": "Landing-page variant test on PMax | CT | National"
+    "title": "Test asset group and landing page changes on PMax CT National"
    }
   ],
   "hypotheses": [
    {
     "finding_ids": [
+     "7e45afabb1ebc5819d8a19612242685bf90c66b9f55dfff0ef07cd292f7585ad",
+     "f7bd2e3bdbc4a833591993905d74563d85d955120e9f6b4d12c06bf8b3064079"
+    ],
+    "statement": "Clicks on [SYNTHETIC] Meta | CT | Prospecting stayed close to their earlier level (1754 vs 1706), yet attributed conversions stopped from 2026-10-21 to 2026-10-26. This may point to a tracking or form issue with the 'Scan enquiry form submitted' event rather than to a change in audience interest."
+   },
+   {
+    "finding_ids": [
      "1438d8f36e01b8a95910befd948a875b51acf32b6a31bf4618b889e0d5cfe782"
     ],
-    "statement": "Auction pressure or a bid-strategy mismatch may be raising the cost of each platform-attributed conversion on Search | MRI | London."
+    "statement": "[SYNTHETIC] Search | MRI | London received fewer clicks (1177 to 778) on similar spend. Higher click costs, for example from auction competition, could account for part of the rise in cost per conversion."
    },
    {
     "finding_ids": [
-     "2b53e7fc7f862dec1f01052b708140552f233807eeadf746a5cc2fe514d237b0"
-    ],
-    "statement": "Creative fatigue or a shift in audience mix may be lowering platform-attributed ROAS on Meta | CT | Prospecting."
-   },
-   {
-    "finding_ids": [
+     "6935fc14c86f9830e80ef9f6556681a8db591c4333680430123ad900cc84b0b8",
      "53e6992cbfcc09c2782dfc31516dfe2ba54c802e4017f4fd64e17c50e235d2ab"
     ],
-    "statement": "Creative fatigue or a shift in audience mix may be lowering platform-attributed ROAS on PMax | CT | National."
+    "statement": "[SYNTHETIC] PMax | CT | National kept a similar click volume while its conversion rate fell. This may reflect lower-quality placements or a change in the landing or booking-request experience."
    },
    {
     "finding_ids": [
-     "6935fc14c86f9830e80ef9f6556681a8db591c4333680430123ad900cc84b0b8"
+     "dcca150780ea264c9f8242fbe6eb07344565ca449025da80ad3341b9ef652f91"
     ],
-    "statement": "A change in the post-click experience may be lowering the platform-attributed conversion rate on PMax | CT | National."
+    "statement": "The strong attributed efficiency of [SYNTHETIC] Search | MRI | Brand could partly reflect existing brand demand that might convert without ads, so it may not indicate incremental impact."
    }
   ],
-  "limitations": [],
+  "limitations": [
+   "Several findings concern the same campaigns and share inputs, so they should not be read as independent signals.",
+   "Some findings were suppressed by the noise guard and are not reflected here.",
+   "The Meta and Google conversion events measure different funnel stages and should not be compared directly."
+  ],
   "observed_facts": [
-   {
-    "finding_ids": [
-     "1438d8f36e01b8a95910befd948a875b51acf32b6a31bf4618b889e0d5cfe782"
-    ],
-    "statement": "Cost per platform-attributed conversion (proxy, not true CAC) for Search | MRI | London moved from GBP 52.77 (2026-10-01 to 2026-10-10) to GBP 108.88 (2026-10-21 to 2026-10-30), a rise of 106.3%."
-   },
-   {
-    "finding_ids": [
-     "2b53e7fc7f862dec1f01052b708140552f233807eeadf746a5cc2fe514d237b0"
-    ],
-    "statement": "Platform-attributed ROAS for Meta | CT | Prospecting moved from 9.66 (2026-10-01 to 2026-10-10) to 4.35 (2026-10-21 to 2026-10-30), a fall of 54.9%."
-   },
-   {
-    "finding_ids": [
-     "53e6992cbfcc09c2782dfc31516dfe2ba54c802e4017f4fd64e17c50e235d2ab"
-    ],
-    "statement": "Platform-attributed ROAS for PMax | CT | National moved from 8.09 (2026-10-01 to 2026-10-10) to 3.69 (2026-10-21 to 2026-10-30), a fall of 54.4%."
-   },
-   {
-    "finding_ids": [
-     "6935fc14c86f9830e80ef9f6556681a8db591c4333680430123ad900cc84b0b8"
-    ],
-    "statement": "Platform-attributed conversion rate for PMax | CT | National moved from 2.91% (2026-10-01 to 2026-10-10) to 1.30% (2026-10-21 to 2026-10-30), a fall of 55.4%."
-   },
    {
     "finding_ids": [
      "7e45afabb1ebc5819d8a19612242685bf90c66b9f55dfff0ef07cd292f7585ad"
     ],
-    "statement": "Meta | CT | Prospecting spent GBP 910.80 with no platform-attributed conversions from 2026-10-21 to 2026-10-26."
+    "statement": "[SYNTHETIC] Meta | CT | Prospecting recorded a run of 6 consecutive days with spend and no platform-attributed conversions, from 2026-10-21 to 2026-10-26, with GBP 910.8 spent during that run."
    },
    {
     "finding_ids": [
-     "85c2b681b099bdb0ed06fb9dc08303c953fe7fa4331e8ea9bdb64b1dd95f458c"
+     "85c2b681b099bdb0ed06fb9dc08303c953fe7fa4331e8ea9bdb64b1dd95f458c",
+     "f7bd2e3bdbc4a833591993905d74563d85d955120e9f6b4d12c06bf8b3064079"
     ],
-    "statement": "Cost per platform-attributed conversion (proxy, not true CAC) for Meta | CT | Prospecting moved from GBP 40.06 (2026-10-01 to 2026-10-10) to GBP 93.62 (2026-10-21 to 2026-10-30), a rise of 133.7%."
+    "statement": "For [SYNTHETIC] Meta | CT | Prospecting, comparing 2026-10-21 to 2026-10-30 with 2026-10-01 to 2026-10-10, cost per platform-attributed conversion rose from GBP 40.06 to GBP 93.62 (+134%). Conversion rate fell from 2.1% to 0.94%, while clicks went from 1754 to 1706."
+   },
+   {
+    "finding_ids": [
+     "1438d8f36e01b8a95910befd948a875b51acf32b6a31bf4618b889e0d5cfe782"
+    ],
+    "statement": "For [SYNTHETIC] Search | MRI | London, cost per platform-attributed conversion rose from GBP 52.77 to GBP 108.88 (+106%) between the same windows. Clicks went from 1177 to 778 while spend went from GBP 4088.07 to GBP 4225.55."
+   },
+   {
+    "finding_ids": [
+     "6935fc14c86f9830e80ef9f6556681a8db591c4333680430123ad900cc84b0b8",
+     "53e6992cbfcc09c2782dfc31516dfe2ba54c802e4017f4fd64e17c50e235d2ab"
+    ],
+    "statement": "For [SYNTHETIC] PMax | CT | National, platform-attributed conversion rate fell from 2.9% to 1.3% and platform-attributed ROAS fell from 8.09 to 3.69. Clicks went from 1671 to 1749 over the same windows."
+   },
+   {
+    "finding_ids": [
+     "dcca150780ea264c9f8242fbe6eb07344565ca449025da80ad3341b9ef652f91"
+    ],
+    "statement": "[SYNTHETIC] Search | MRI | Brand had a cost per platform-attributed conversion of GBP 6.88 against a same-basis peer median of GBP 57.09. Its campaign ROAS was 55.19 against a peer median ROAS of 4.03."
+   },
+   {
+    "finding_ids": [
+     "2b938e1aa8037219cfba9ffb0754deb1dc4b1892b7ac18677527d5856dc439a4"
+    ],
+    "statement": "For [SYNTHETIC] Search | Ultrasound | Manchester, platform-attributed ROAS fell from 5.18 to 3.19 (-39%), comparing 2026-10-24 to 2026-10-30 with 2026-10-17 to 2026-10-23."
    }
   ]
  },
@@ -596,14 +177,18 @@
  "provider": {
   "effort": "medium",
   "max_output_tokens": 10000,
-  "message_id": null,
-  "mode": "mock",
-  "name": "mock",
+  "mode": "live",
+  "name": "anthropic",
   "requested_model": "claude-opus-5-5",
   "response_model": "claude-opus-5-5"
  },
- "rejection_audit": null,
+ "publication": {
+  "kind": "static_sample",
+  "note": "A previously generated, validated sample, published as static data. Request identifiers, budget reservations and ledger details were removed.",
+  "source_artifact_sha256": "492d61fecf761b75c537a1cf2173e399f50fd35edd379feb4595b2acde419f35"
+ },
  "report_id": "feb1e17675c362408a69b029c0f932a347e2c28618880f63ec33bbbd82e4e601",
+ "response_schema_version": "1",
  "validation": {
   "checks": [
    "schema",

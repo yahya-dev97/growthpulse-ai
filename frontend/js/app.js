@@ -517,25 +517,82 @@ function fieldList(pairs) {
   return list;
 }
 
+const EXPERIMENT_TYPES = {
+  diagnostic_investigation: 'Diagnostic investigation',
+  measurement_repair: 'Measurement repair',
+  monitoring: 'Monitoring',
+  randomized_experiment: 'Randomized experiment',
+};
+const METRIC_LABELS = {
+  spend: 'Spend', impressions: 'Impressions', clicks: 'Clicks', ctr: 'CTR', cpc: 'CPC',
+  platform_attributed_conversions: 'Platform-attributed conversions',
+  platform_attributed_conversion_rate: 'Platform-attributed conversion rate',
+  cost_per_platform_attributed_conversion: 'Cost per platform-attributed conversion',
+  platform_attributed_conversion_value: 'Platform-attributed conversion value',
+  platform_attributed_roas: 'Platform-attributed ROAS',
+};
+
+function referenceText(ref) {
+  return `${metricFormat(ref.metric, ref.currency)(num(ref.value))} · ${fmtPeriod(ref.period)}`;
+}
+
+function feasibilityBlock(f) {
+  const box = el('div', 'ai-feas');
+  box.append(el('div', 'ai-feas-head', 'Feasibility · GrowthPulse assessment from the evidence, not AI output'));
+  box.append(el('p', '', f.summary));
+  const extra = [...f.caveats, ...f.assumptions];
+  if (f.volume?.clicks !== undefined && f.volume.clicks !== null) {
+    extra.unshift(`Volume in the current ${f.volume.window_days}-day window: ${count(num(f.volume.clicks))} clicks, ${f.volume.platform_attributed_conversions} platform-attributed conversions.`);
+  }
+  if (extra.length) {
+    const details = el('details', 'ai-feas-more');
+    details.append(el('summary', '', 'Volume, assumptions and caveats'));
+    const list = el('ul', 'limit-list');
+    for (const line of extra) list.append(el('li', '', line));
+    details.append(list);
+    box.append(details);
+  }
+  return box;
+}
+
 function aiExperiment(exp) {
   const box = el('div', 'ai-item');
   box.append(el('div', 'ai-title', exp.title));
+  const tags = el('div', 'erow');
+  tags.append(el('span', `badge ${exp.legacy ? 'draft' : 'neutral'}`,
+    exp.legacy ? 'Legacy proposal · type not stated' : EXPERIMENT_TYPES[exp.experiment_type]));
+  if (exp.feasibility.interpretation_blocked_until_measurement_repair) {
+    const blocked = el('span', 'badge blocked');
+    blocked.append(icon(ICONS.alert), document.createTextNode('Blocked until tracking repair is verified'));
+    tags.append(blocked);
+  }
+  tags.style.marginBottom = '6px';
+  box.append(tags);
+  if (exp.legacy) box.append(el('p', 'ai-legacy', exp.legacy_note));
   box.append(el('p', '', exp.problem_statement));
   box.append(el('p', '', `Hypothesis (untested): ${exp.hypothesis}`));
-  box.append(el('p', '', `Proposed test: ${exp.proposed_experiment}`));
-  const b = exp.baseline;
+  box.append(el('p', '', `Proposed: ${exp.proposed_experiment}`));
   const a = exp.attribution;
   const windows = [a.click_window_days && `${a.click_window_days}-day click`, a.view_window_days && `${a.view_window_days}-day view`]
     .filter(Boolean).join(', ');
-  box.append(fieldList([
+  const refs = exp.reference_values;
+  const notStated = 'Not stated (legacy proposal)';
+  const rows = [
     ['Target metric', exp.target_metric_label],
-    ['Baseline', `${metricFormat(exp.target_metric, b.currency)(num(b.value))} · ${fmtPeriod(b.period)}${b.baseline_kind.startsWith('peer') ? ' · peer median' : ''}`],
+    ['Current baseline', referenceText(refs.current)],
+  ];
+  if (refs.comparison) rows.push([refs.comparison.label, `${referenceText(refs.comparison)} · ${refs.comparison.note}`]);
+  rows.push(
     ['Attribution', `${a.event_name} · ${a.attribution_model.replaceAll('_', ' ')}${windows ? ` · ${windows}` : ''}`],
     ['Measurement', exp.measurement_method],
+    ['Success criteria', exp.success_criteria ?? notStated],
+    ['Guardrails', exp.guardrail_metrics.length ? exp.guardrail_metrics.map((m) => METRIC_LABELS[m] ?? m).join(', ') : notStated],
     ['Duration', `${exp.duration_days} days`],
     ['Risks', exp.risks.join(' ')],
     ['Assumptions', exp.assumptions.join(' ')],
-  ]));
+  );
+  box.append(fieldList(rows));
+  box.append(feasibilityBlock(exp.feasibility));
   box.append(citationChips(exp.citations));
   const foot = el('div', 'erow');
   foot.style.marginTop = '8px';
@@ -550,23 +607,30 @@ function renderAiInsights(main) {
   const ai = client().ai_insights;
   const meta = state.data.meta.ai;
   const p = ai.provenance;
-  const panel = card('AI insights', 'Facts, untested hypotheses and experiment proposals, each citing the findings it rests on');
+  const panel = card(
+    p.is_ai_output ? 'AI-generated advisory insights' : 'Advisory insights (deterministic fallback)',
+    'Facts, untested hypotheses and unexecuted experiment proposals, each citing the deterministic findings it rests on'
+  );
   panel.classList.add('ai-panel');
 
   const prov = el('div', 'ai-prov');
   const source = el('span', `badge ${p.is_ai_output ? 'ai-source' : 'ai-fallback'}`);
   source.append(icon(ICONS.info), document.createTextNode(p.source_label));
   prov.append(source);
-  prov.append(el('span', 'badge neutral', p.validated ? `Validated · ${p.validation_checks.length} checks passed` : 'Fallback · validated by the same checks'));
+  const checks = p.validation_checks.length;
+  prov.append(el('span', 'badge neutral', p.validated
+    ? `Validated · ${checks} evidence checks passed · response schema ${p.response_schema_version}`
+    : `Fallback · passes the same ${checks} checks`));
+  if (p.generated_at) prov.append(el('span', 'mono', `generated ${fmtAsOf(p.generated_at)} · ${p.model}`));
   prov.append(el('span', 'mono', `evidence ${p.package_id.slice(0, 12)}… · report ${p.report_id.slice(0, 8)}…`));
-  if (p.generated_at) prov.append(el('span', 'mono', `generated ${fmtAsOf(p.generated_at)} · ${p.model} · ${p.prompt_version}`));
   panel.append(prov);
 
   const banner = el('div', 'demo-banner');
   banner.append(icon(ICONS.info, 15));
   const text = el('div');
   text.append(el('strong', '', 'Static, not live inference. '));
-  text.append(document.createTextNode(`${p.static_note}${p.fallback_reason ? ` Showing the fallback because ${p.fallback_reason}.` : ''}`));
+  const sampleNote = p.is_ai_output ? ' This is a previously generated sample on synthetic data.' : '';
+  text.append(document.createTextNode(`${p.static_note}${sampleNote}${p.fallback_reason ? ` Showing the fallback because ${p.fallback_reason}.` : ''}`));
   banner.append(text);
   panel.append(banner);
 
@@ -579,9 +643,9 @@ function renderAiInsights(main) {
     return col;
   };
   cols.append(
-    column('Observed facts', 'What the evidence shows. No causes.', ai.observed_facts, aiStatement),
+    column('Observed facts', p.is_ai_output ? 'AI-written, each checked against the cited evidence. No causes.' : 'Templated from the evidence. No causes.', ai.observed_facts, aiStatement),
     column('Hypotheses', 'Possible explanations, untested.', ai.hypotheses, aiStatement),
-    column('Experiment proposals', 'Advisory only. Nothing is applied to any account.', ai.experiments, aiExperiment),
+    column('Experiment proposals', 'Advisory only, never executed. Nothing is applied to any account.', ai.experiments, aiExperiment),
   );
   panel.append(cols);
 
@@ -599,19 +663,11 @@ function renderAiInsights(main) {
     span.append(document.createTextNode(`${label} `), el('strong', '', value));
     return span;
   };
-  spend.append(item('Development budget:', `$${meta.budget_usd} cap`));
-  const cost = p.cost;
-  if (!cost) spend.append(item('This content:', 'no API call (deterministic)'));
-  else if (cost.status === 'mock_no_charge') spend.append(item('This artifact:', '$0 · offline mock, no API call'));
-  else spend.append(item('This artifact:', `${cost.estimated_usd ? `$${cost.estimated_usd} estimated` : `up to $${cost.reserved_max_usd} (cost unknown, held)`}`));
-  if (cost?.ledger_after) {
-    const l = cost.ledger_after;
-    spend.append(item('Local ledger at generation:', `$${l.committed_usd} of $${l.budget_usd} · ${l.live_requests} live request${l.live_requests === 1 ? '' : 's'}`));
-  }
-  const snap = meta.manual_balance_snapshot;
-  const balance = item('Anthropic balance:', `$${snap.amount_usd}`);
-  balance.append(document.createTextNode(` (manual snapshot, ${snap.as_of}; not fetched, not reconciled with the ledger)`));
-  spend.append(balance);
+  spend.append(item('Cost controls:', `development spend capped at $${meta.budget_usd}`));
+  spend.append(p.estimated_cost_usd
+    ? item('This sample:', `about $${num(p.estimated_cost_usd).toFixed(2)} to generate (estimate)`)
+    : item('This content:', 'no API call (deterministic)'));
+  spend.append(el('span', '', 'No live advertising connection · approvals are not saved · nothing is executed'));
   panel.append(spend);
   main.append(panel);
 }
