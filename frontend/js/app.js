@@ -492,7 +492,132 @@ function experimentCard(draft, status, actions) {
   return box;
 }
 
+/* AI insights: a pre-generated, validated static artifact or the deterministic fallback.
+   The browser never calls the Anthropic API; the provenance line says which source this is. */
+
+function citationChips(citations) {
+  const row = el('div', 'ai-cites');
+  for (const c of citations) {
+    const chip = el('span', 'ai-cite', `${c.metric_label} · ${c.campaign_name.replace('[SYNTHETIC] ', '')}`);
+    chip.title = `Finding ${c.finding_id}`;
+    row.append(chip);
+  }
+  return row;
+}
+
+function aiStatement(item) {
+  const box = el('div', 'ai-item');
+  box.append(el('p', '', item.statement), citationChips(item.citations));
+  return box;
+}
+
+function fieldList(pairs) {
+  const list = el('dl', 'ai-fields');
+  for (const [key, value] of pairs) list.append(el('dt', '', key), el('dd', '', value));
+  return list;
+}
+
+function aiExperiment(exp) {
+  const box = el('div', 'ai-item');
+  box.append(el('div', 'ai-title', exp.title));
+  box.append(el('p', '', exp.problem_statement));
+  box.append(el('p', '', `Hypothesis (untested): ${exp.hypothesis}`));
+  box.append(el('p', '', `Proposed test: ${exp.proposed_experiment}`));
+  const b = exp.baseline;
+  const a = exp.attribution;
+  const windows = [a.click_window_days && `${a.click_window_days}-day click`, a.view_window_days && `${a.view_window_days}-day view`]
+    .filter(Boolean).join(', ');
+  box.append(fieldList([
+    ['Target metric', exp.target_metric_label],
+    ['Baseline', `${metricFormat(exp.target_metric, b.currency)(num(b.value))} · ${fmtPeriod(b.period)}${b.baseline_kind.startsWith('peer') ? ' · peer median' : ''}`],
+    ['Attribution', `${a.event_name} · ${a.attribution_model.replaceAll('_', ' ')}${windows ? ` · ${windows}` : ''}`],
+    ['Measurement', exp.measurement_method],
+    ['Duration', `${exp.duration_days} days`],
+    ['Risks', exp.risks.join(' ')],
+    ['Assumptions', exp.assumptions.join(' ')],
+  ]));
+  box.append(citationChips(exp.citations));
+  const foot = el('div', 'erow');
+  foot.style.marginTop = '8px';
+  const guard = el('span', 'badge neutral');
+  guard.append(icon(ICONS.info), document.createTextNode('Proposal · requires human approval · not executed'));
+  foot.append(guard);
+  box.append(foot);
+  return box;
+}
+
+function renderAiInsights(main) {
+  const ai = client().ai_insights;
+  const meta = state.data.meta.ai;
+  const p = ai.provenance;
+  const panel = card('AI insights', 'Facts, untested hypotheses and experiment proposals, each citing the findings it rests on');
+  panel.classList.add('ai-panel');
+
+  const prov = el('div', 'ai-prov');
+  const source = el('span', `badge ${p.is_ai_output ? 'ai-source' : 'ai-fallback'}`);
+  source.append(icon(ICONS.info), document.createTextNode(p.source_label));
+  prov.append(source);
+  prov.append(el('span', 'badge neutral', p.validated ? `Validated · ${p.validation_checks.length} checks passed` : 'Fallback · validated by the same checks'));
+  prov.append(el('span', 'mono', `evidence ${p.package_id.slice(0, 12)}… · report ${p.report_id.slice(0, 8)}…`));
+  if (p.generated_at) prov.append(el('span', 'mono', `generated ${fmtAsOf(p.generated_at)} · ${p.model} · ${p.prompt_version}`));
+  panel.append(prov);
+
+  const banner = el('div', 'demo-banner');
+  banner.append(icon(ICONS.info, 15));
+  const text = el('div');
+  text.append(el('strong', '', 'Static, not live inference. '));
+  text.append(document.createTextNode(`${p.static_note}${p.fallback_reason ? ` Showing the fallback because ${p.fallback_reason}.` : ''}`));
+  banner.append(text);
+  panel.append(banner);
+
+  const cols = el('div', 'ai-cols');
+  const column = (title, note, items, render) => {
+    const col = el('div', 'ai-col');
+    col.append(el('h4', '', title), el('div', 'kind-note', note));
+    if (!items.length) col.append(el('div', 'note', 'None for this report.'));
+    for (const item of items) col.append(render(item));
+    return col;
+  };
+  cols.append(
+    column('Observed facts', 'What the evidence shows. No causes.', ai.observed_facts, aiStatement),
+    column('Hypotheses', 'Possible explanations, untested.', ai.hypotheses, aiStatement),
+    column('Experiment proposals', 'Advisory only. Nothing is applied to any account.', ai.experiments, aiExperiment),
+  );
+  panel.append(cols);
+
+  const limits = el('details', 'table-view');
+  limits.append(el('summary', '', 'Attribution limits and caveats'));
+  const list = el('ul', 'limit-list');
+  for (const line of [...ai.limitations.attribution, ...ai.limitations.model_noted]) list.append(el('li', '', line));
+  limits.append(list);
+  limits.style.marginTop = '10px';
+  panel.append(limits);
+
+  const spend = el('div', 'ai-spend');
+  const item = (label, value) => {
+    const span = el('span');
+    span.append(document.createTextNode(`${label} `), el('strong', '', value));
+    return span;
+  };
+  spend.append(item('Development budget:', `$${meta.budget_usd} cap`));
+  const cost = p.cost;
+  if (!cost) spend.append(item('This content:', 'no API call (deterministic)'));
+  else if (cost.status === 'mock_no_charge') spend.append(item('This artifact:', '$0 · offline mock, no API call'));
+  else spend.append(item('This artifact:', `${cost.estimated_usd ? `$${cost.estimated_usd} estimated` : `up to $${cost.reserved_max_usd} (cost unknown, held)`}`));
+  if (cost?.ledger_after) {
+    const l = cost.ledger_after;
+    spend.append(item('Local ledger at generation:', `$${l.committed_usd} of $${l.budget_usd} · ${l.live_requests} live request${l.live_requests === 1 ? '' : 's'}`));
+  }
+  const snap = meta.manual_balance_snapshot;
+  const balance = item('Anthropic balance:', `$${snap.amount_usd}`);
+  balance.append(document.createTextNode(` (manual snapshot, ${snap.as_of}; not fetched, not reconciled with the ledger)`));
+  spend.append(balance);
+  panel.append(spend);
+  main.append(panel);
+}
+
 function renderInsights(main) {
+  renderAiInsights(main);
   const grid = el('div', 'grid split');
 
   const findingsCard = card('Analytical findings', 'Deterministic rule-based detections from the synthetic reporting period, after the noise guard');

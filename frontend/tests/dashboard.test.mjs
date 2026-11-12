@@ -71,6 +71,25 @@ test('AI insights shows findings and a clearly labelled demo workflow', { skip }
   assert.match(html, /findings suppressed by the noise guard/);
 });
 
+test('AI insights panel labels its source and never claims live inference', { skip }, () => {
+  const mock = render('#insights');
+  assert.match(mock, /Offline mock provider: deterministic template content, not Claude output/);
+  assert.match(mock, /Static, not live inference\./);
+  assert.match(mock, /The browser never calls the Anthropic API/);
+  assert.match(mock, /Validated · 15 checks passed/);
+  assert.equal(count(mock, 'class="ai-item"'), 6 + 4 + 4);
+  assert.match(mock, /Proposal · requires human approval · not executed/);
+  assert.match(mock, /\$1\.00 cap/);
+  assert.match(mock, /\$2\.84/);
+  assert.match(mock, /manual snapshot, 2026-11-12; not fetched, not reconciled with the ledger/);
+  assert.doesNotMatch(mock, /sk-ant-/);
+
+  const fallback = render('?client=exampleclinic-ie#insights');
+  assert.match(fallback, /Deterministic fallback: rule-based templates, not AI output/);
+  assert.match(fallback, /no AI artifact has been generated for this report/);
+  assert.match(fallback, /no API call \(deterministic\)/);
+});
+
 test('accounts and reports screens render, sync is marked illustrative', { skip }, () => {
   const accounts = render('#accounts');
   assert.equal(selectedTab(accounts), 'Accounts &amp; Sync');

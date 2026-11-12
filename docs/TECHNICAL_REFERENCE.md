@@ -2,7 +2,7 @@
 
 > Moved from the repository root on 2026-11-12. The portfolio overview is now [README.md](../README.md). This file keeps the detailed reference: data model, attribution rules, KPI formulas, thresholds, report structure and persistence. Its architecture section and roadmap table describe the original plan, which named a Streamlit dashboard. The implemented dashboard is plain HTML in [frontend/](../frontend/README.md), and the README's roadmap supersedes the one here.
 
-GrowthPulse ingests Google Ads and Meta Ads performance data (synthetic only, today), calculates marketing KPIs, detects anomalies, and stores results in Supabase PostgreSQL. Planned, not yet built: LLM-generated insights through the Anthropic API, live advertising connectors, and a hosted dashboard. See the capability matrix in [README.md](../README.md).
+GrowthPulse ingests Google Ads and Meta Ads performance data (synthetic only, today), calculates marketing KPIs, detects anomalies, and stores results in Supabase PostgreSQL. The Anthropic insight pipeline is built and tested offline (no live call yet). It's documented in [AI_INSIGHTS.md](AI_INSIGHTS.md). Planned, not yet built: live advertising connectors and a hosted dashboard. See the capability matrix in [README.md](../README.md).
 
 > **Status: Milestone 3 (KPI analytics and anomaly detection).** AI analysis, persistence, and the dashboard do not exist yet. See the [roadmap](#milestone-roadmap).
 
@@ -32,7 +32,7 @@ There are two separate runtimes. They share one library and communicate only thr
 |---|---|---|
 | `connectors/` | Synthetic, Google Ads, and Meta Ads sources, normalized to one schema | Read-only |
 | `analytics/` | KPI calculation and anomaly detection | Pure functions, no I/O |
-| `ai_analysis/` | Insights and experiment recommendations via the Anthropic API | Works only from computed metrics |
+| `ai_analysis/` | Insights and experiment recommendations via the Anthropic API, validated against the report's evidence, with a deterministic fallback and a spend ledger ([details](AI_INSIGHTS.md)) | Works only from computed metrics. Imports no connector, persistence, pipeline, dashboard or credentials code |
 | `persistence/` | Supabase PostgreSQL access | The only package that runs SQL |
 | `pipeline/` | Scheduled job | The only package that composes the backend layers |
 | `dashboard/` | Streamlit UI | Never imports connectors, AI analysis, or the pipeline |
@@ -78,6 +78,7 @@ growthpulse-ai/
 - **No invented results.** Synthetic data is always labeled as synthetic and is never presented as real campaign performance.
 - **No patient information.** The system works with aggregated advertising metrics. Do not load real patient or other personal health data.
 - **No committed secrets.** Credentials come from environment variables only, and `.gitignore` excludes `.env` and common credential files.
+- **Bounded AI spend.** Live Anthropic calls are off by default and need explicit opt-in. Each one reserves its maximum cost in a local ledger capped at $1.00, makes no retries, and fails closed whenever its cost can't be determined. See [AI_INSIGHTS.md](AI_INSIGHTS.md).
 
 ## Setup
 
