@@ -59,7 +59,9 @@ def test_tls_is_judged_on_the_client_side(ssl, minimum, compiled, expected):
 
 
 def test_checked_tables_and_views_match_the_migrations():
-    sql = "\n".join(path.read_text() for path in MIGRATIONS)
+    # Milestones 4 and 5: the check must also pass on Supabase between Phase D and the
+    # Milestone 7a.2 migrations, which add only the audit_events view.
+    sql = "\n".join(path.read_text() for path in MIGRATIONS[:8])
     assert set(TABLES) | set(WRITER_REFUSED_TABLES) == set(
         re.findall(r"create table growthpulse\.(\w+)", sql)
     )

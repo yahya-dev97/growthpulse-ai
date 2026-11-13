@@ -1,7 +1,9 @@
 """Read client, account and sync context from the database, as the pipeline's writer role.
 
 The pipeline acts on explicit contexts loaded here, never on a database default. Every read
-runs in a read-only transaction.
+runs in a read-only transaction scoped to one client (``context.begin_job``), so it sees
+nothing of any other client or organization. The dispatcher's question, which accounts are
+due, is the one cross-organization read; it returns account IDs only.
 """
 
 from collections.abc import Sequence
@@ -20,7 +22,8 @@ from growthpulse_ai.accounts.models import (
     ClientStatus,
 )
 from growthpulse_ai.accounts.scheduling import DateWindow
-from growthpulse_ai.persistence.errors import ClientNotFoundError
+from growthpulse_ai.persistence.context import begin_job, context_installed
+from growthpulse_ai.persistence.errors import ClientNotFoundError, TenantScopeError
 from growthpulse_ai.schema import DataSource, Platform
 
 SELECT_CLIENT = """
@@ -59,9 +62,14 @@ select ad_account_id, synced_through from growthpulse.account_sync_state
 where ad_account_id = any(%(ad_account_ids)s)
 """
 
-# Accounts whose next sync is due: syncing enabled, account and client active, not paused
-# or running, and (for live accounts) an active connection.
-SELECT_DUE_ACCOUNTS = """
+# Accounts whose next sync is due, across organizations: syncing enabled, account, client
+# and organization active, not paused or running, and (for live accounts) an active
+# connection. Account IDs only; each sync then runs in its own client's scope.
+SELECT_DUE_ACCOUNTS = "select growthpulse_auth.due_account_syncs(%(now)s)"
+
+# The same question on a database still at Milestone 5 (see context.begin_job). Remove with
+# that compatibility check.
+SELECT_DUE_ACCOUNTS_M5 = """
 select a.ad_account_id
 from growthpulse.account_sync_state as s
 join growthpulse.account_sync_config as c on c.ad_account_id = s.ad_account_id
@@ -93,6 +101,10 @@ def _account(row: dict[str, Any]) -> AccountContext:
 def load_client(connection: psycopg.Connection, client_id: UUID) -> ClientContext:
     """The client and every account assigned to it, in any status."""
     with connection.transaction(), connection.cursor(row_factory=dict_row) as cursor:
+        try:
+            begin_job(cursor, "client", client_id)
+        except TenantScopeError:
+            raise ClientNotFoundError("No client with this ID") from None
         cursor.execute("set transaction read only")
         client = cursor.execute(SELECT_CLIENT, {"client_id": client_id}).fetchone()
         if client is None:
@@ -117,7 +129,11 @@ class SyncEvidence:
 def sync_evidence(
     connection: psycopg.Connection, ad_account_ids: Sequence[UUID], window: DateWindow
 ) -> list[SyncEvidence]:
+    if not ad_account_ids:
+        return []
     with connection.transaction(), connection.cursor() as cursor:
+        # All accounts belong to one client; any other client's rows stay invisible.
+        begin_job(cursor, "ad_account", ad_account_ids[0])
         cursor.execute("set transaction read only")
         rows = cursor.execute(
             SELECT_SYNC_EVIDENCE,
@@ -130,7 +146,11 @@ def sync_evidence(
 
 
 def watermarks(connection: psycopg.Connection, ad_account_ids: Sequence[UUID]) -> dict[UUID, Any]:
+    if not ad_account_ids:
+        return {}
     with connection.transaction(), connection.cursor() as cursor:
+        # All accounts belong to one client; any other client's rows stay invisible.
+        begin_job(cursor, "ad_account", ad_account_ids[0])
         cursor.execute("set transaction read only")
         rows = cursor.execute(SELECT_WATERMARKS, {"ad_account_ids": list(ad_account_ids)})
         return dict(rows.fetchall())
@@ -139,11 +159,16 @@ def watermarks(connection: psycopg.Connection, ad_account_ids: Sequence[UUID]) -
 def due_accounts(connection: psycopg.Connection, now: datetime) -> list[UUID]:
     with connection.transaction(), connection.cursor() as cursor:
         cursor.execute("set transaction read only")
-        return [row[0] for row in cursor.execute(SELECT_DUE_ACCOUNTS, {"now": now}).fetchall()]
+        query = SELECT_DUE_ACCOUNTS if context_installed(connection) else SELECT_DUE_ACCOUNTS_M5
+        return [row[0] for row in cursor.execute(query, {"now": now}).fetchall()]
 
 
 def sync_inputs(connection: psycopg.Connection, ad_account_id: UUID) -> tuple[Any, int, Any] | None:
     """(synced_through, lookback_days, backfill_start_date), or None if hidden or unknown."""
-    with connection.transaction(), connection.cursor() as cursor:
-        cursor.execute("set transaction read only")
-        return cursor.execute(SELECT_SYNC_INPUTS, {"ad_account_id": ad_account_id}).fetchone()
+    try:
+        with connection.transaction(), connection.cursor() as cursor:
+            begin_job(cursor, "ad_account", ad_account_id)
+            cursor.execute("set transaction read only")
+            return cursor.execute(SELECT_SYNC_INPUTS, {"ad_account_id": ad_account_id}).fetchone()
+    except TenantScopeError:
+        return None

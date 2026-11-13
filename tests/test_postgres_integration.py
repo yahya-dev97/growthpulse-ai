@@ -22,7 +22,7 @@ from psycopg import sql
 from pydantic import SecretStr
 
 from factories import make_row
-from growthpulse_ai.accounts.legacy import LEGACY_SYNTHETIC_CLIENT
+from growthpulse_ai.accounts.legacy import LEGACY_SYNTHETIC_CLIENT, LEGACY_WORKSPACE_ID
 from growthpulse_ai.analytics.report import build_report
 from growthpulse_ai.config import PROJECT_ROOT
 from growthpulse_ai.connectors.synthetic import SyntheticConnector
@@ -43,6 +43,7 @@ from growthpulse_ai.pipeline.persisted_run import PipelineRunError, run_and_pers
 from growthpulse_ai.pipeline.sample_report import build_sample_report
 from growthpulse_ai.schema import DataSource
 from multi_client import CLIENTS, sync_client
+from pg_helpers import request_rows, sign_in
 from pg_seed import register_account, seed_legacy_client, seed_synthetic_client, start_client_run
 
 TEST_URL = os.environ.get("GROWTHPULSE_TEST_DATABASE_URL", "")
@@ -349,7 +350,12 @@ def test_writer_can_propose_but_never_approve():
     with writer() as connection:
         proposal_id = record_experiment_proposal(connection, proposal)
         assert record_experiment_proposal(connection, proposal) == proposal_id
-        with pytest.raises(pg_errors.InsufficientPrivilege):
+        # Inside the client's own job scope, so only the propose-only rule can refuse it.
+        with pytest.raises(pg_errors.InsufficientPrivilege), connection.transaction():
+            connection.execute(
+                "select growthpulse_auth.begin_job('client', %s, null)",
+                (LEGACY_SYNTHETIC_CLIENT.client_id,),
+            )
             connection.execute(
                 "insert into growthpulse.experiment_status_events (proposal_id, status, actor) "
                 "values (%s, 'approved', 'pipeline')",
@@ -415,9 +421,10 @@ def test_status_transitions_are_enforced():
 
 def test_dashboard_reads_the_latest_report_and_runs():
     outcome = run()
+    request = sign_in(LEGACY_WORKSPACE_ID, "viewer", clients=[LEGACY_SYNTHETIC_CLIENT.client_id])
     with as_role(DASHBOARD_ROLE) as connection:
-        report = read.latest_report(connection, "synthetic")
-        runs = read.recent_runs(connection)
+        report = read.latest_report(connection, request, "synthetic")
+        runs = read.recent_runs(connection, request)
     assert report["report_id"] == outcome.report_id
     assert [r["run_id"] for r in runs] == [outcome.run_id]
     assert runs[0]["appears_abandoned"] is False
@@ -470,7 +477,9 @@ def test_delivery_view_counts_each_campaign_day_once():
         register_account(connection, "synthetic-account")
     run(SyntheticConnector(rows=rows))
     assert scalar("select count(*) from growthpulse.ad_performance_records") == 60
-    assert scalar("select count(*) from growthpulse_read.campaign_daily_delivery") == 30
+    request = sign_in(LEGACY_WORKSPACE_ID)
+    query = "select count(*) from growthpulse_read.campaign_daily_delivery"
+    assert request_rows(request, query) == [(30,)]
 
 
 def test_database_refuses_raw_payloads_for_live_data():

@@ -23,6 +23,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from growthpulse_ai.accounts.models import AccountContext
+from growthpulse_ai.persistence.context import begin_job
 from growthpulse_ai.schema import AdPerformanceRecord, DataSource
 
 LOAD_RECORDS = """
@@ -111,6 +112,8 @@ def load_records(
         "end": end,
     }
     with connection.transaction(), connection.cursor(row_factory=dict_row) as cursor:
+        # One client's accounts: the scope makes every other client's records invisible.
+        begin_job(cursor, "client", accounts[0].client_id)
         cursor.execute("set transaction read only")
         rows = cursor.execute(LOAD_RECORDS, params).fetchall()
     return [row_to_record(row) for row in rows]

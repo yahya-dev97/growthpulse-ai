@@ -39,14 +39,20 @@ MIGRATIONS_DIR = PROJECT_ROOT / "supabase" / "migrations"
 ROLLBACK_DIR = PROJECT_ROOT / "supabase" / "rollback"
 DROP_ALL = ROLLBACK_DIR / "20261111100000_drop_growthpulse.sql"
 REVERT_M5 = ROLLBACK_DIR / "20261111200000_revert_milestone_5.sql"
+REVERT_M7A = ROLLBACK_DIR / "20261114100000_revert_m7a2_tenant_security.sql"
 MIGRATIONS = sorted(MIGRATIONS_DIR.glob("*.sql"))
 SQL = "\n".join(path.read_text() for path in MIGRATIONS)
 TABLES_SQL = MIGRATIONS[0].read_text()
 ACCESS_SQL = MIGRATIONS[1].read_text()
 VIEWS_SQL = MIGRATIONS[2].read_text()
 (TENANCY_SQL, SCOPE_SQL, TOKENS_SQL, OWNER_SQL, GRANTS_SQL) = (
-    path.read_text() for path in MIGRATIONS[3:]
+    path.read_text() for path in MIGRATIONS[3:8]
 )
+(IDENTITY_SQL, CONTEXT_SQL, HARDEN_SQL, POLICIES_SQL) = (
+    path.read_text() for path in MIGRATIONS[8:]
+)
+M5_SQL = "\n".join(path.read_text() for path in MIGRATIONS[3:8])
+M7A_SQL = "\n".join(path.read_text() for path in MIGRATIONS[8:])
 API_ROLES = ("public", "anon", "authenticated", "service_role")
 APPEND_ONLY = (
     "analytics_reports",
@@ -106,7 +112,7 @@ def writer_update_grants() -> dict[str, set[str]]:
 def test_migrations_are_ordered_and_named():
     assert [path.name[:14] for path in MIGRATIONS] == sorted(path.name[:14] for path in MIGRATIONS)
     assert all(re.fullmatch(r"\d{14}_[a-z_]+\.sql", path.name) for path in MIGRATIONS)
-    assert len(MIGRATIONS) == 8
+    assert len(MIGRATIONS) == 12
 
 
 def test_milestone_4_migrations_are_unchanged_in_name():
@@ -277,6 +283,13 @@ def test_dashboard_gets_select_on_read_views_only():
         "grant usage on schema growthpulse_read to growthpulse_dashboard;",
         "grant select on all tables in schema growthpulse_read to growthpulse_dashboard;",
         "grant select on all tables in schema growthpulse_read to growthpulse_dashboard;",
+        # Milestone 7a.2: the filters its views call, and the new audit view.
+        "grant execute on function growthpulse_auth.request_client_ids() to growthpulse_dashboard;",
+        "grant execute on function growthpulse_auth.request_workspace_if(text) "
+        "to growthpulse_dashboard;",
+        "grant execute on function growthpulse_auth.request_owner_action_ids() "
+        "to growthpulse_dashboard;",
+        "grant select on growthpulse_read.audit_events to growthpulse_dashboard;",
     ]
 
 
@@ -310,9 +323,10 @@ def test_migrations_hold_no_secrets_or_privileged_attributes():
         assert role[1].strip() == "nologin noinherit", role
 
 
-def definer_functions() -> dict[str, str]:
-    """name -> full text, for every SECURITY DEFINER function."""
-    functions = re.findall(r"create function ([\w.]+)\((.*?)\$\$;", strip_comments(SQL), re.DOTALL)
+def definer_functions(sql: str | None = None) -> dict[str, str]:
+    """name -> full text, for every SECURITY DEFINER function (Milestones 4 and 5 by default)."""
+    sql = "\n".join(path.read_text() for path in MIGRATIONS[:8]) if sql is None else sql
+    functions = re.findall(r"create function ([\w.]+)\((.*?)\$\$;", strip_comments(sql), re.DOTALL)
     return {name: body for name, body in functions if "security definer" in body}
 
 
@@ -330,7 +344,7 @@ def test_security_definer_functions_exist_only_in_the_approved_migrations():
 
 def test_each_definer_function_is_granted_to_exactly_one_restricted_role():
     grants = re.findall(
-        r"grant execute on function ([\w.]+)\(.*?\)\s+to (\w+);", strip_comments(SQL), re.DOTALL
+        r"grant execute on function ([\w.]+)\(.*?\)\s+to (\w+);", strip_comments(M5_SQL), re.DOTALL
     )
     granted: dict[str, set[str]] = {}
     for name, role in grants:
@@ -365,7 +379,7 @@ def test_every_view_states_its_security_mode():
 
 def test_rollback_script_is_kept_out_of_the_migrations_folder():
     rollbacks = list(ROLLBACK_DIR.glob("*.sql"))
-    assert {path.name for path in rollbacks} == {DROP_ALL.name, REVERT_M5.name}
+    assert {path.name for path in rollbacks} == {DROP_ALL.name, REVERT_M5.name, REVERT_M7A.name}
     names = {path.name for path in MIGRATIONS}
     assert not names & {path.name for path in rollbacks}
 
@@ -389,7 +403,7 @@ def test_rollback_only_drops_growthpulse_objects_by_name():
         ).groups()
         for target in drop_targets(targets):
             assert re.fullmatch(
-                r"growthpulse(_read|_secrets)?(\.\w+(\([\w ,]*\))?)?|growthpulse_\w+", target
+                r"growthpulse(_read|_secrets|_auth)?(\.\w+(\([\w ,]*\))?)?|growthpulse_\w+", target
             ), (kind, target)
 
 
@@ -432,7 +446,7 @@ def test_revert_script_never_cascades_and_touches_only_growthpulse_objects():
 
 def test_revert_script_removes_everything_milestone_5_adds():
     text = " ".join(rollback_statements(REVERT_M5))
-    m5 = "\n".join(path.read_text() for path in MIGRATIONS[3:])
+    m5 = M5_SQL
     for name in re.findall(r"create table growthpulse(?:_secrets)?\.(\w+)", m5):
         assert f".{name}" in text, name
     for function in re.findall(r"create function ([\w.]+)\(", m5):
@@ -526,12 +540,19 @@ def test_object_references_are_schema_qualified():
         "growthpulse",
         "growthpulse_read",
         "growthpulse_secrets",
+        "growthpulse_auth",
     }
     assert unqualified == set()
     for name in references:
         if "." in name:
             prefix = name.split(".")[0]
-            allowed = {"growthpulse", "growthpulse_read", "growthpulse_secrets", "pg_catalog"}
+            allowed = {
+                "growthpulse",
+                "growthpulse_read",
+                "growthpulse_secrets",
+                "growthpulse_auth",
+                "pg_catalog",
+            }
             # Aliases (from "as x") and trigger records qualify columns, not schemas.
             assert prefix in allowed or prefix in {"new", "old", "excluded"} | keywords, name
 
@@ -584,7 +605,7 @@ def test_milestone_5_checks_expect_exactly_the_legacy_backfill():
     text = (VERIFICATION_DIR / "milestone_5_checks.sql").read_text()
     for value in (LEGACY_CLIENT_ID, LEGACY_GOOGLE_ACCOUNT_ID, LEGACY_META_ACCOUNT_ID):
         assert str(value) in text
-    for path in MIGRATIONS:
+    for path in MIGRATIONS[:8]:
         assert f"('{path.name[:14]}')" in text
 
 
@@ -603,7 +624,9 @@ REMOVE_FALLBACKS = PROPOSED_DIR / "20261111200500_remove_scope_fallbacks.sql"
 def test_proposed_migration_is_kept_out_of_the_migrations_folder():
     assert REMOVE_FALLBACKS.exists()
     assert REMOVE_FALLBACKS.name not in {path.name for path in MIGRATIONS}
-    assert REMOVE_FALLBACKS.name[:14] > MIGRATIONS[-1].name[:14]
+    # It sorts after Milestone 5. Milestone 7a.2 migrations now sort after it, so if it is
+    # ever approved it must be renamed to the next free number before it moves.
+    assert MIGRATIONS[7].name[:14] < REMOVE_FALLBACKS.name[:14] < MIGRATIONS[8].name[:14]
 
 
 def test_proposed_migration_only_removes_the_fallbacks():

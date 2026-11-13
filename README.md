@@ -199,7 +199,7 @@ Detailed records are kept in the repository: the [technical reference](docs/TECH
 ## Technical stack
 
 - **Language and tooling:** Python 3.12, uv, Ruff, Pydantic 2, psycopg 3, cryptography, the official `anthropic` SDK.
-- **Database:** PostgreSQL, hosted on Supabase (PostgreSQL 17). There are 8 migrations, plus restrict-only revert scripts and read-only verification scripts.
+- **Database:** PostgreSQL, hosted on Supabase (PostgreSQL 17). There are 12 migrations (8 for Milestones 4 and 5, and 4 for the Milestone 7a.2 tenant security foundation, [docs/M7A_TENANT_SECURITY.md](docs/M7A_TENANT_SECURITY.md), not yet applied to Supabase), plus restrict-only revert scripts and read-only verification scripts.
 - **Frontend:** plain HTML, CSS and JavaScript with no build step. Charts are hand-written SVG, using a colour palette checked for colour-vision deficiency.
 - **Tests:** pytest, Node's built-in test runner, and headless Chrome through the DevTools Protocol.
 - **CI:** GitHub Actions, with a PostgreSQL 17.11 service container.

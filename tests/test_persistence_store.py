@@ -244,3 +244,29 @@ def test_existing_proposal_is_returned_without_a_new_status():
     database = FakeDatabase(results={"select proposal_id": (proposal_id,)})
     assert record_experiment_proposal(database.connect(), proposal()) == proposal_id
     assert database.matching("experiment_status_events") == []
+
+
+# Tenant scope (Milestone 7a.2): every transaction is scoped to the client it writes
+
+
+def test_every_transaction_is_scoped_to_the_client_it_writes(run_inputs):
+    database = FakeDatabase()
+    run_id = uuid4()
+    start_run(database.connect(), run_id, data_source=SYNTHETIC, triggered_by="test",
+              client_id=LEGACY_CLIENT_ID)  # fmt: skip
+    save(database, run_inputs, run_id)
+    mark_run_failed(database.connect(), run_id, "database_unavailable")
+    database.results["insert into growthpulse.experiment_proposals"] = (uuid4(),)
+    record_experiment_proposal(database.connect(), proposal())
+    expected = [
+        {"kind": "client", "scope_id": LEGACY_CLIENT_ID, "job_id": run_id},
+        {"kind": "client", "scope_id": LEGACY_CLIENT_ID, "job_id": run_id},
+        {"kind": "run", "scope_id": run_id, "job_id": run_id},
+        {"kind": "client", "scope_id": LEGACY_CLIENT_ID, "job_id": None},
+    ]
+    assert [params for _, params in database.scopes] == expected
+    # Each scope is set inside its own transaction, before any of its statements.
+    transactions = [transaction for transaction, _ in database.scopes]
+    assert len(set(transactions)) == 4 and None not in transactions
+    for transaction in transactions:
+        assert transaction in {s.transaction for s in database.statements}

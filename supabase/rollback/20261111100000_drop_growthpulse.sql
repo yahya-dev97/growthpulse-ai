@@ -1,14 +1,16 @@
--- DESTRUCTIVE. Reverses all eight 20261111 migrations (Milestones 4 and 5) and deletes
--- every GrowthPulse row, including encrypted credentials. Never run this without explicit
--- approval. To undo only Milestone 5 and keep the Milestone 4 data, use
--- 20261111200000_revert_milestone_5.sql instead.
+-- DESTRUCTIVE. Reverses every GrowthPulse migration (Milestones 4, 5 and 7a.2) and
+-- deletes every GrowthPulse row, including encrypted credentials, users, memberships and
+-- audit events. Never run this without explicit approval. To undo only Milestone 7a.2,
+-- use 20261114100000_revert_m7a2_tenant_security.sql; to undo only Milestone 5 after
+-- that, use 20261111200000_revert_milestone_5.sql.
 --
 -- Kept outside supabase/migrations so `supabase db push` can never run it. Run it by hand,
 -- as the project owner (postgres), only after reviewing it. Afterwards, mark the
 -- migrations as reverted so the CLI history matches the database:
 --
 --   supabase migration repair --status reverted 20261111100000 20261111100100 20261111100200 \
---       20261111200000 20261111200100 20261111200200 20261111200300 20261111200400
+--       20261111200000 20261111200100 20261111200200 20261111200300 20261111200400 \
+--       20261114100000 20261114100100 20261114100200 20261114100300
 --
 -- Every object is dropped by name with RESTRICT, never CASCADE. If anything outside these
 -- two schemas depends on them (a view, a foreign key, a function), or if a schema holds
@@ -19,6 +21,7 @@
 begin;
 
 drop view if exists
+    growthpulse_read.audit_events,
     growthpulse_read.latest_client_reports,
     growthpulse_read.report_breakdowns,
     growthpulse_read.clients,
@@ -38,6 +41,16 @@ drop view if exists
     growthpulse_read.experiment_status_history
     restrict;
 drop schema if exists growthpulse_read restrict;
+
+drop table if exists
+    growthpulse_auth.context_keys,
+    growthpulse_auth.audit_events,
+    growthpulse_auth.sessions,
+    growthpulse_auth.client_grants,
+    growthpulse_auth.memberships,
+    growthpulse_auth.users,
+    growthpulse_auth.organizations
+    restrict;
 
 drop function if exists
     growthpulse_secrets.store_credential(uuid, text, smallint, smallint, bytea, bytea, timestamptz),
@@ -96,8 +109,37 @@ drop function if exists
     restrict;
 drop schema if exists growthpulse restrict;
 
+drop function if exists
+    growthpulse_auth.request_owner_action_ids(),
+    growthpulse_auth.action_permission(text),
+    growthpulse_auth.target_workspace(text, text),
+    growthpulse_auth.due_account_syncs(timestamptz),
+    growthpulse_auth.revoke_session(bytea),
+    growthpulse_auth.create_session(uuid, bytea, timestamptz),
+    growthpulse_auth.request_workspace_if(text),
+    growthpulse_auth.request_permits(text),
+    growthpulse_auth.request_client_ids(),
+    growthpulse_auth.job_account_ids(),
+    growthpulse_auth.job_client_ids(),
+    growthpulse_auth.job_workspace(),
+    growthpulse_auth.context_workspace(),
+    growthpulse_auth.begin_job(text, uuid, uuid),
+    growthpulse_auth.begin_request(bytea, uuid, uuid),
+    growthpulse_auth.role_permits(text, text),
+    growthpulse_auth.current_context(),
+    growthpulse_auth.set_context(text, uuid, uuid, uuid, text, uuid, uuid),
+    growthpulse_auth.context_mac(text),
+    growthpulse_auth.check_client_grant(),
+    growthpulse_auth.check_membership_update(),
+    growthpulse_auth.check_client_organization(),
+    growthpulse_auth.check_organization_update(),
+    growthpulse_auth.create_organization_for_workspace()
+    restrict;
+drop schema if exists growthpulse_auth restrict;
+
 -- Fails, and rolls everything back, if either role still holds a privilege or owns an
 -- object anywhere else in the database. Close any session using them first.
+drop role if exists growthpulse_authenticator;
 drop role if exists growthpulse_manager;
 drop role if exists growthpulse_token_manager;
 drop role if exists growthpulse_dashboard;

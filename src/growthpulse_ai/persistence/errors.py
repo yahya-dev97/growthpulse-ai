@@ -36,6 +36,10 @@ class ClientNotFoundError(PersistenceError):
     """No active client with this ID, or it has no account to analyse."""
 
 
+class TenantScopeError(PersistenceError):
+    """The tenant context was refused: unknown scope, inactive organization, or no session."""
+
+
 def classify_database_error(error: BaseException) -> str | None:
     """Return a fixed error code for a database failure, or None for other errors."""
     if isinstance(error, DatabaseConfigurationError):
@@ -50,6 +54,8 @@ def classify_database_error(error: BaseException) -> str | None:
         return "account_busy"
     if isinstance(error, ClientNotFoundError):
         return "client_not_found"
+    if isinstance(error, TenantScopeError):
+        return "tenant_scope_refused"
     # Checked before OperationalError: privilege and RLS failures are configuration problems.
     if isinstance(error, pg_errors.InsufficientPrivilege):
         return "database_permission_denied"
