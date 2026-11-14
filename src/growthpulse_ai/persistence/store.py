@@ -4,6 +4,9 @@ Every row is written with its scope passed explicitly: the client of a run, repo
 finding or proposal, and the account of a record, finding or quarantined row. Nothing
 relies on a database default, and nothing is ever re-filed under another account.
 
+Every transaction first scopes itself to the client it writes (``context.begin_job``), so
+the database refuses any row of another client or organization (migration 12).
+
 Three kinds of run share this module:
 
 - **Combined** (Milestone 4 shape): ``start_run``, then ``save_run_results`` writes one
@@ -38,6 +41,7 @@ from growthpulse_ai.accounts.assignment import assign_findings
 from growthpulse_ai.accounts.models import AccountContext, AccountMismatchError, ClientContext
 from growthpulse_ai.accounts.scheduling import DateWindow, FailureDecision, SyncFrequency
 from growthpulse_ai.data_quality import QUALITY_EVIDENCE_VERSION, QuarantinedRow, ValidationResult
+from growthpulse_ai.persistence.context import begin_job
 from growthpulse_ai.persistence.errors import (
     AccountBusyError,
     AccountNotSyncableError,
@@ -320,8 +324,9 @@ def start_run(
         raise ValueError("Account syncs start with claim_account_sync")
     if code_version is not None and not CODE_VERSION_PATTERN.fullmatch(code_version):
         raise ValueError("code_version must be a lowercase hexadecimal Git commit hash")
-    with connection.transaction():
-        connection.execute(
+    with connection.transaction(), connection.cursor() as cursor:
+        begin_job(cursor, "client", client_id, run_id)
+        cursor.execute(
             INSERT_RUN,
             _run_params(
                 run_id, data_source, triggered_by, code_version, run_kind, client_id, None,
@@ -437,6 +442,7 @@ def save_run_results(
     )
 
     with connection.transaction(), connection.cursor() as cursor:
+        begin_job(cursor, "client", client.client_id, run_id)
         counts = {
             "records_received": len(record_params),
             "records_written": _write_many(cursor, UPSERT_RECORD, record_params),
@@ -460,6 +466,7 @@ def mark_run_failed(
     if not ERROR_CODE_PATTERN.fullmatch(error_code):
         raise ValueError("error_code must be a short snake_case code")
     with connection.transaction(), connection.cursor() as cursor:
+        begin_job(cursor, "run", run_id, run_id)
         cursor.execute(
             FAIL_RUN,
             {"run_id": run_id, "counts": Jsonb(counts or {}), "error_code": error_code},
@@ -510,6 +517,7 @@ def claim_account_sync(
     if code_version is not None and not CODE_VERSION_PATTERN.fullmatch(code_version):
         raise ValueError("code_version must be a lowercase hexadecimal Git commit hash")
     with connection.transaction(), connection.cursor() as cursor:
+        begin_job(cursor, "client", account.client_id, run_id)
         row = cursor.execute(CLAIM_SYNC_STATE, {"ad_account_id": account.ad_account_id}).fetchone()
         if row is None:
             raise AccountNotSyncableError("The account is unknown or paused")
@@ -620,6 +628,7 @@ def save_account_sync(
         ),
     }
     with connection.transaction(), connection.cursor() as cursor:
+        begin_job(cursor, "client", account.client_id, run_id)
         _hold_lease(cursor, account, run_id)
         counts = {
             "records_received": len(record_params),
@@ -666,6 +675,7 @@ def record_sync_failure(
     if not ERROR_CODE_PATTERN.fullmatch(error_code):
         raise ValueError("error_code must be a short snake_case code")
     with connection.transaction(), connection.cursor() as cursor:
+        begin_job(cursor, "client", account.client_id, run_id)
         cursor.execute(
             FAIL_RUN,
             {"run_id": run_id, "counts": Jsonb(counts or {}), "error_code": error_code},
@@ -708,6 +718,7 @@ def save_client_analysis(
     if breakdown["report_id"] != report["report_id"]:
         raise ValueError("The breakdown belongs to another report")
     with connection.transaction(), connection.cursor() as cursor:
+        begin_job(cursor, "client", client_id, run_id)
         counts = _write_report_and_findings(cursor, run_id, report, client_id, finding_accounts)
         cursor.execute(
             INSERT_BREAKDOWN,
@@ -771,6 +782,7 @@ def record_experiment_proposal(
         "primary_metric": proposal.primary_metric,
     }
     with connection.transaction(), connection.cursor() as cursor:
+        begin_job(cursor, "client", proposal.client_id)
         created = cursor.execute(INSERT_PROPOSAL, params).fetchone()
         if created is None:
             existing = cursor.execute(SELECT_PROPOSAL, params).fetchone()

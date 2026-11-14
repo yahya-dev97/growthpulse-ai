@@ -1707,7 +1707,7 @@ def run_m5_verification() -> list[tuple]:
             "(version text primary key, statements text[], name text)"
         )
         connection.execute("truncate supabase_migrations.schema_migrations")
-        for path in MIGRATIONS:
+        for path in [*M4_MIGRATIONS, *M5_MIGRATIONS]:
             version, name = path.stem.split("_", 1)
             connection.execute(
                 "insert into supabase_migrations.schema_migrations (version, name) values (%s, %s)",

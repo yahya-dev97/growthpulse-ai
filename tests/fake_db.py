@@ -24,6 +24,8 @@ class FakeDatabase:
     """Shared across every connection a test opens, like a real server would be."""
 
     statements: list[Statement] = field(default_factory=list)
+    # (transaction, params) of each growthpulse_auth.begin_job call, kept out of statements
+    scopes: list[tuple[int | None, Any]] = field(default_factory=list)
     committed: list[int] = field(default_factory=list)
     rolled_back: list[int] = field(default_factory=list)
     connections: list["FakeConnection"] = field(default_factory=list)
@@ -59,6 +61,10 @@ class FakeCursor:
         self.rowcount = -1
         self._row: Any = None
 
+    @property
+    def connection(self) -> "FakeConnection":
+        return self._connection
+
     def __enter__(self) -> "FakeCursor":
         return self
 
@@ -67,6 +73,14 @@ class FakeCursor:
 
     def _run(self, query: str, params: Any, many: bool) -> None:
         database = self._connection.database
+        # Behave like a database with migration 10: the context exists, and each job scope
+        # is recorded on its own so statement-order checks stay about the data.
+        if query.startswith("select to_regprocedure('growthpulse_auth.begin_job"):
+            self._row = ("growthpulse_auth.begin_job",)
+            return
+        if "growthpulse_auth.begin_job(" in query:
+            database.scopes.append((self._connection.transaction_id, params))
+            return
         database.statements.append(Statement(query, params, self._connection.transaction_id, many))
         error = database._lookup(database.fail_on, query, None)
         if error is not None:

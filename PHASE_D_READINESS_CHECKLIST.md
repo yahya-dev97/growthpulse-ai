@@ -7,7 +7,7 @@
 | Project | `sxycykdtgqqyvrlijmlk` (PostgreSQL 17.11, ap-southeast-2) |
 | State today | Milestone 4: 3 migrations, 2 runs, 300 records, 1 report (`feb1e176…`), 19 findings, 0 quarantined rows, proposals or status events |
 | What Phase D applies | Exactly the five approved Milestone 5 migrations, `20261111200000` to `20261111200400` |
-| What Phase D does not apply | `supabase/proposed/20261111200500_remove_scope_fallbacks.sql` (decision 4) |
+| What Phase D does not apply | `supabase/proposed/20261111200500_remove_scope_fallbacks.sql` (decision 4), and the Milestone 7a.2 migrations `20261114100000` to `20261114100300` (gate G4, a separate approval, with its own `G4_MIGRATION_CHECKLIST.md`). `supabase db push` applies everything in `supabase/migrations`, so run Phase D from a checkout without those four files: `main` at `7b86bac`, for example `git worktree add ../growthpulse-phase-d 7b86bac`. Don't merge PR #3 before Phase D is complete |
 
 ---
 
@@ -119,7 +119,7 @@ These are read-only and run as `postgres` with psql, as in Milestone 4.
 - [ ] **[approval]** Go-ahead to apply.
 - [ ] **[you]** Apply them the way you did in Milestone 4.
   - Running `supabase db push` with `SUPABASE_DB_PASSWORD` set avoids the temporary `cli_login_postgres` role, which a push without it creates or refreshes.
-  - Run `--dry-run` first. It must list **exactly** the five `202611112000xx`–`202611112004xx` versions, and nothing from `proposed/`.
+  - Run `--dry-run` first. It must list **exactly** the five `202611112000xx`–`202611112004xx` versions, and nothing from `proposed/`. If it also lists any `2026111410xxxx` version, stop: the checkout includes Milestone 7a.2.
 - [ ] Each file applies in its own transaction. A refusal in migration 5, for example on unexpected data, rolls that file back completely, and leaves only migration 4's empty tables (section 7, case A).
 
 ## 6. Verification, and when to stop

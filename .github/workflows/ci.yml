@@ -22,8 +22,9 @@ jobs:
   # Applies the migrations to a throwaway PostgreSQL 17 container, the major version
   # Supabase runs, and exercises the persistence code and role limits against it. This
   # includes the Milestone 5 upgrade from the exact Milestone 4 state, the fail-closed
-  # backfill, cross-client isolation, the four roles' boundaries and the Milestone 5
-  # revert. Never connects to Supabase.
+  # backfill, cross-client isolation, the roles' boundaries, the Milestone 7a.2
+  # two-organization isolation, context forgery and pooling tests, and both reverts.
+  # Never connects to Supabase.
   postgres-integration:
     runs-on: ubuntu-latest
     services:
