@@ -7,7 +7,7 @@
 | Project | `sxycykdtgqqyvrlijmlk` (PostgreSQL 17.11, ap-southeast-2) |
 | State today | Milestone 4: 3 migrations, 2 runs, 300 records, 1 report (`feb1e176…`), 19 findings, 0 quarantined rows, proposals or status events |
 | What Phase D applies | Exactly the five approved Milestone 5 migrations, `20261111200000` to `20261111200400` |
-| What Phase D does not apply | `supabase/proposed/20261111200500_remove_scope_fallbacks.sql` (decision 4), and the Milestone 7a.2 migrations `20261114100000` to `20261114100300` (gate G4, a separate approval). `supabase db push` applies everything in `supabase/migrations`, so run Phase D from a checkout without those four files, such as `main` at `7b86bac` |
+| What Phase D does not apply | `supabase/proposed/20261111200500_remove_scope_fallbacks.sql` (decision 4), and the Milestone 7a.2 migrations `20261114100000` to `20261114100300` (gate G4, a separate approval, with its own `G4_MIGRATION_CHECKLIST.md`). `supabase db push` applies everything in `supabase/migrations`, so run Phase D from a checkout without those four files: `main` at `7b86bac`, for example `git worktree add ../growthpulse-phase-d 7b86bac`. Don't merge PR #3 before Phase D is complete |
 
 ---
 

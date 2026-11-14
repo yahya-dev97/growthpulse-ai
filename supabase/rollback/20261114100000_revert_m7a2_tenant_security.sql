@@ -570,6 +570,8 @@ drop trigger workspaces_create_organization on growthpulse.workspaces;
 drop trigger clients_check_organization on growthpulse.clients;
 
 drop function growthpulse_auth.request_owner_action_ids();
+drop function growthpulse_auth.require_credential_permission(uuid, text);
+drop function growthpulse_auth.credential_permits(uuid, text);
 drop function growthpulse_auth.action_permission(text);
 drop function growthpulse_auth.target_workspace(text, text);
 drop function growthpulse_auth.due_account_syncs(timestamptz);
@@ -586,7 +588,7 @@ drop function growthpulse_auth.begin_job(text, uuid, uuid);
 drop function growthpulse_auth.begin_request(bytea, uuid, uuid);
 drop function growthpulse_auth.role_permits(text, text);
 drop function growthpulse_auth.current_context();
-drop function growthpulse_auth.set_context(text, uuid, uuid, uuid, text, uuid, uuid);
+drop function growthpulse_auth.set_context(text, uuid, uuid, uuid, text, uuid, uuid, text, uuid);
 drop function growthpulse_auth.context_mac(text);
 drop table growthpulse_auth.context_keys;
 

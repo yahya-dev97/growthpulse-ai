@@ -112,6 +112,8 @@ drop schema if exists growthpulse restrict;
 drop function if exists
     growthpulse_auth.request_owner_action_ids(),
     growthpulse_auth.action_permission(text),
+    growthpulse_auth.require_credential_permission(uuid, text),
+    growthpulse_auth.credential_permits(uuid, text),
     growthpulse_auth.target_workspace(text, text),
     growthpulse_auth.due_account_syncs(timestamptz),
     growthpulse_auth.revoke_session(bytea),
@@ -127,7 +129,7 @@ drop function if exists
     growthpulse_auth.begin_request(bytea, uuid, uuid),
     growthpulse_auth.role_permits(text, text),
     growthpulse_auth.current_context(),
-    growthpulse_auth.set_context(text, uuid, uuid, uuid, text, uuid, uuid),
+    growthpulse_auth.set_context(text, uuid, uuid, uuid, text, uuid, uuid, text, uuid),
     growthpulse_auth.context_mac(text),
     growthpulse_auth.check_client_grant(),
     growthpulse_auth.check_membership_update(),

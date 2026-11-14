@@ -65,6 +65,26 @@ def test_the_upgrade_compatibility_check_is_documented_for_removal():
     assert "Remove this check once migrations 9-12 are applied on Supabase" in (
         context.begin_job.__doc__ or ""
     )
+    # And the G4 checklist makes it a step, so it can't persist unnoticed.
+    g4 = (PROJECT_ROOT / "G4_MIGRATION_CHECKLIST.md").read_text()
+    section = g4.split("## 7. Remove the pre-migration fallback")[1].split("\n## ")[0]
+    for name in ("context_installed", "CONTEXT_INSTALLED", "SELECT_DUE_ACCOUNTS_M5"):
+        assert name in section, name
+
+
+def test_the_g4_checklist_applies_only_the_approved_four_and_checks_isolation():
+    g4 = (PROJECT_ROOT / "G4_MIGRATION_CHECKLIST.md").read_text()
+    for path in M7A:
+        assert path.stem.split("_")[0] in g4
+    for required in (
+        "--dry-run",
+        "m7a_checks.sql",
+        "m7a_pooler_check.sql",
+        "port 6543",
+        "Exposed schemas",
+        "milestone_4_fingerprints.sql",
+    ):
+        assert required in g4, required
 
 
 def definer_functions(sql: str) -> dict[str, str]:
@@ -88,9 +108,42 @@ def test_internal_functions_are_granted_to_no_role():
         "growthpulse_auth.context_mac", "growthpulse_auth.set_context",
         "growthpulse_auth.current_context", "growthpulse_auth.target_workspace",
         "growthpulse_auth.action_permission", "growthpulse_auth.role_permits",
-        "growthpulse.log_owner_action",
+        "growthpulse_auth.credential_permits",
+        "growthpulse_auth.require_credential_permission", "growthpulse.log_owner_action",
     ):  # fmt: skip
         assert internal not in granted, internal
+
+
+def test_the_unverified_session_functions_have_no_application_caller_yet():
+    """Session creation trusts its caller to have verified the Supabase login, which
+    nothing does until M7b. Until then no application code may reach it, so no endpoint
+    can. The M7b sign-in service verifies the login token first, and then removes this test.
+    """
+    for path in SRC.rglob("*.py"):
+        text = path.read_text()
+        for name in ("create_session", "revoke_session", "growthpulse_authenticator"):
+            assert name not in text, (path, name)
+    code = strip_comments(CONTEXT_SQL)
+    for function in ("create_session", "revoke_session"):
+        pattern = rf"grant execute on function growthpulse_auth\.{function}\(.*?;"
+        grants = re.findall(pattern, code, re.S)
+        assert grants, function
+        assert all(g.rstrip(";").endswith("to growthpulse_authenticator") for g in grants)
+    assert "UNVERIFIED" in CONTEXT_SQL and "session.create_unverified" in CONTEXT_SQL
+
+
+def test_every_token_function_checks_authorization_before_anything_else():
+    bodies = definer_functions(HARDEN_SQL)
+    for name, permission in (
+        ("store_credential", "connection.create"), ("read_credentials", "connection.read"),
+        ("delete_credentials", "connection.revoke"),
+        ("mark_connection_needs_reauth", "connection.revoke"),
+        ("credentials_needing_rotation", "connection.read"),
+    ):  # fmt: skip
+        body = bodies[f"growthpulse_secrets.{name}"]
+        first = re.search(r"\bbegin\s+(.*?);", body, re.S).group(1)
+        assert first.startswith("perform growthpulse_auth.require_credential_permission("), name
+        assert f"'{permission}')" in first, name
 
 
 def test_token_functions_check_the_context_organization():

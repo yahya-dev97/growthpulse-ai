@@ -2,11 +2,27 @@
 --
 -- Milestone 7a design: docs/M7A_TENANT_SECURITY.md, section 4 (findings 1, 5, 8, 9, 10).
 --
--- Token functions (migration 6). Each now acts only on a connection of the organization in
--- this transaction's verified context (growthpulse_auth.begin_request or begin_job). A
--- connection of another organization is reported exactly like an unknown one, so a caller
--- cannot even learn that it exists. The rotation listing is limited the same way. The
--- function signatures, return types, grants and the encrypted format are unchanged.
+-- Token functions (migration 6). Two checks, in this order:
+--   1. Authorization (growthpulse_auth.require_credential_permission). Without a context,
+--      or with one that does not permit the operation, every function raises 42501:
+--        signed-in request: the person's role must hold the permission (store:
+--          connection.create, read: connection.read, delete and mark for
+--          reauthorization: connection.revoke, rotation listing: connection.read). Only
+--          owners and admins hold these; viewers and analysts are refused.
+--        job: it must be organization-wide (scope 'workspace'), or scoped to exactly the
+--          connection operated on (scope 'connection'). Client, account and run jobs are
+--          refused. The rotation listing covers the organization, so it needs 'workspace'.
+--      This check does not depend on the connection, so it reveals nothing about it.
+--   2. Organization. Each function acts only on a connection of the context's
+--      organization. A connection of another organization is reported exactly like an
+--      unknown one, so a caller cannot even learn that it exists.
+-- The function signatures, return types, grants and the encrypted format are unchanged.
+-- Store, delete and mark for reauthorization are audited, without token material.
+--
+-- What this does not stop (docs/M7A_TENANT_SECURITY.md, section 3): the token manager may
+-- begin a job for any organization, because the refresh worker serves all of them. Its
+-- credential is therefore a cross-organization credential. M7b binds its jobs to claimed
+-- refresh leases.
 --
 -- Owner actions (migration 7). All eleven functions end by calling
 -- growthpulse.log_owner_action in the same transaction. It now resolves the action's
@@ -19,6 +35,46 @@
 -- activating a connection (finding 3), delete leaving the status (finding 4) and the
 -- revoke workflow, which change with the live OAuth flow in M7b; and function ownership
 -- (finding 6).
+
+
+-- Internal: whether this transaction's context may perform a credential operation on a
+-- connection (p_connection_id), or on the whole organization (null). Granted to no role.
+create function growthpulse_auth.credential_permits(p_connection_id uuid, p_permission text)
+returns boolean
+language sql
+stable
+set search_path = ''
+as $$
+    select coalesce((
+        select case
+            when c.kind = 'request' then growthpulse_auth.request_permits(p_permission)
+            when c.kind = 'job' then c.client_id is null and (
+                c.scope_kind = 'workspace'
+                or (c.scope_kind = 'connection' and p_connection_id is not null
+                    and c.scope_id = p_connection_id)
+            )
+            else false
+        end
+        from growthpulse_auth.current_context() as c
+    ), false);
+$$;
+
+-- Internal: raises unless credential_permits. Granted to no role.
+create function growthpulse_auth.require_credential_permission(
+    p_connection_id uuid, p_permission text
+)
+returns void
+language plpgsql
+stable
+set search_path = ''
+as $$
+begin
+    if not growthpulse_auth.credential_permits(p_connection_id, p_permission) then
+        raise exception 'Not permitted to operate credentials in this context'
+            using errcode = 'insufficient_privilege';
+    end if;
+end;
+$$;
 
 
 create or replace function growthpulse_secrets.store_credential(
@@ -41,6 +97,7 @@ declare
     v_user_id uuid;
     v_request_id uuid;
 begin
+    perform growthpulse_auth.require_credential_permission(p_connection_id, 'connection.create');
     select c.status, c.workspace_id into v_status, v_workspace_id
     from growthpulse.provider_connections as c
     where c.connection_id = p_connection_id
@@ -93,17 +150,21 @@ returns table (
     ciphertext bytea,
     expires_at timestamptz
 )
-language sql
+language plpgsql
 stable
 security definer
 set search_path = ''
 as $$
+begin
+    perform growthpulse_auth.require_credential_permission(p_connection_id, 'connection.read');
+    return query
     select o.token_type, o.format_version, o.key_version, o.nonce, o.ciphertext, o.expires_at
     from growthpulse_secrets.oauth_credentials as o
     join growthpulse.provider_connections as c on c.connection_id = o.connection_id
     where o.connection_id = p_connection_id and c.status = 'active'
         and c.workspace_id = growthpulse_auth.context_workspace()
     order by o.token_type;
+end;
 $$;
 
 
@@ -119,6 +180,7 @@ declare
     v_user_id uuid;
     v_request_id uuid;
 begin
+    perform growthpulse_auth.require_credential_permission(p_connection_id, 'connection.revoke');
     select c.workspace_id into v_workspace_id
     from growthpulse.provider_connections as c
     where c.connection_id = p_connection_id
@@ -149,33 +211,55 @@ language plpgsql
 security definer
 set search_path = ''
 as $$
+declare
+    v_workspace_id uuid;
+    v_user_id uuid;
+    v_request_id uuid;
 begin
+    perform growthpulse_auth.require_credential_permission(p_connection_id, 'connection.revoke');
     update growthpulse.provider_connections as c
     set status = 'needs_reauth'
     where c.connection_id = p_connection_id and c.status = 'active'
-        and c.workspace_id = growthpulse_auth.context_workspace();
-    return found;
+        and c.workspace_id = growthpulse_auth.context_workspace()
+    returning c.workspace_id into v_workspace_id;
+    if v_workspace_id is null then
+        return false;
+    end if;
+
+    select c.user_id, c.ref_id into v_user_id, v_request_id
+    from growthpulse_auth.current_context() as c;
+    insert into growthpulse_auth.audit_events (
+        workspace_id, actor_user_id, actor_service, action, target_type, target_id, request_id
+    ) values (
+        v_workspace_id, v_user_id, case when v_user_id is null then 'token_manager' end,
+        'connection.needs_reauth', 'connection', p_connection_id::text, v_request_id
+    );
+    return true;
 end;
 $$;
 
 
 -- Finding 10: limited to the organization in context. A rotation job runs once per
--- organization, each in its own job context.
+-- organization, each in its own workspace-scoped job context.
 create or replace function growthpulse_secrets.credentials_needing_rotation(
     p_active_key_version smallint
 )
 returns table (connection_id uuid, token_type text, key_version smallint)
-language sql
+language plpgsql
 stable
 security definer
 set search_path = ''
 as $$
+begin
+    perform growthpulse_auth.require_credential_permission(null, 'connection.read');
+    return query
     select o.connection_id, o.token_type, o.key_version
     from growthpulse_secrets.oauth_credentials as o
     join growthpulse.provider_connections as c on c.connection_id = o.connection_id
     where o.key_version <> p_active_key_version
         and c.workspace_id = growthpulse_auth.context_workspace()
     order by o.connection_id, o.token_type;
+end;
 $$;
 
 

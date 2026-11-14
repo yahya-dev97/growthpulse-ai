@@ -99,15 +99,20 @@ create index sessions_user_idx on growthpulse_auth.sessions (user_id);
 -- Append-only. Codes and IDs only: no free text and no personal data.
 create table growthpulse_auth.audit_events (
     event_id bigint generated always as identity primary key,
-    workspace_id uuid not null references growthpulse_auth.organizations (workspace_id),
+    -- Null only for account-level session events, which belong to no organization.
+    workspace_id uuid references growthpulse_auth.organizations (workspace_id),
     actor_user_id uuid references growthpulse_auth.users (user_id),
-    actor_service text check (actor_service in ('pipeline', 'token_manager', 'operator')),
+    actor_service text check (
+        actor_service in ('pipeline', 'token_manager', 'operator', 'authenticator')
+    ),
     action text not null check (action ~ '^[a-z][a-z_.]{0,63}$'),
     target_type text not null check (target_type ~ '^[a-z][a-z_]{0,31}$'),
     target_id text not null check (char_length(target_id) between 1 and 64),
     request_id uuid,
     occurred_at timestamptz not null default now(),
-    constraint audit_events_one_actor check ((actor_user_id is null) <> (actor_service is null))
+    constraint audit_events_one_actor check ((actor_user_id is null) <> (actor_service is null)),
+    constraint audit_events_organization_or_session
+        check ((workspace_id is null) = (action like 'session.%'))
 );
 create index audit_events_workspace_idx on growthpulse_auth.audit_events
     (workspace_id, occurred_at desc);

@@ -539,6 +539,74 @@ def test_session_functions_belong_to_the_authenticator_only(orgs):
     assert refused(request)
 
 
+def test_session_creation_and_revocation_are_audited_without_token_material(orgs):
+    user_id, token = uuid4(), secrets.token_bytes(32)
+    token_hash = session_token_hash(token)
+    with admin() as connection:
+        connection.execute("insert into growthpulse_auth.users (user_id) values (%s)", (user_id,))
+    expires = datetime.now(UTC) + timedelta(hours=1)
+    with as_role(AUTHENTICATOR) as connection:
+        connection.execute(
+            "select growthpulse_auth.create_session(%s, %s, %s)", (user_id, token_hash, expires)
+        )
+        assert connection.execute(
+            "select growthpulse_auth.revoke_session(%s)", (token_hash,)
+        ).fetchone() == (True,)
+        # Already revoked, or unknown: nothing to revoke and nothing audited.
+        assert connection.execute(
+            "select growthpulse_auth.revoke_session(%s)", (token_hash,)
+        ).fetchone() == (False,)
+        with pytest.raises(NOT_PERMITTED):  # a refused creation leaves no session
+            connection.execute(
+                "select growthpulse_auth.create_session(%s, %s, %s)",
+                (uuid4(), session_token_hash(secrets.token_bytes(32)), expires),
+            )
+    events = rows(
+        "select workspace_id, actor_user_id, actor_service, action, target_type, target_id, "
+        "request_id from growthpulse_auth.audit_events where target_id = %s order by event_id",
+        (str(user_id),),
+    )
+    # The action name says the sign-in was not verified: the database cannot know.
+    assert events == [
+        (None, None, "authenticator", "session.create_unverified", "user", str(user_id), None),
+        (None, None, "authenticator", "session.revoke", "user", str(user_id), None),
+    ]
+    # No token or hash anywhere in the audit trail: no binary column, no hex of the hash.
+    assert (
+        rows(
+            "select column_name from information_schema.columns where table_schema = "
+            "'growthpulse_auth' and table_name = 'audit_events' and data_type = 'bytea'"
+        )
+        == []
+    )
+    assert (
+        scalar(
+            "select count(*) from growthpulse_auth.audit_events "
+            "where position(%s in concat_ws(' ', action, target_type, target_id)) > 0",
+            (token_hash.hex(),),
+        )
+        == 0
+    )
+    # Account-level events are in no organization's audit view.
+    seen = request_rows(
+        orgs["owner_b"],
+        "select action from growthpulse_read.audit_events where target_id = %s",
+        (str(user_id),),
+    )
+    assert seen == []
+
+
+def test_only_session_events_may_lack_an_organization(orgs):
+    with admin() as connection:
+        for workspace_id, action in ((None, "credential.store"), (WORKSPACE_B, "session.revoke")):
+            with pytest.raises(pg_errors.CheckViolation), connection.transaction():
+                connection.execute(
+                    "insert into growthpulse_auth.audit_events (workspace_id, actor_service, "
+                    "action, target_type, target_id) values (%s, 'operator', %s, 'user', 'x')",
+                    (workspace_id, action),
+                )
+
+
 # 4. Context forgery, replay and transaction pooling
 
 
@@ -828,6 +896,38 @@ STORE = (
 )
 
 
+def credentials_refused():
+    return pytest.raises(
+        pg_errors.InsufficientPrivilege, match="Not permitted to operate credentials"
+    )
+
+
+def token_statements(connection_id: UUID) -> list[tuple[str, tuple]]:
+    """All five token functions, each with its arguments for ``connection_id``."""
+    return [
+        (READ, (connection_id,)),
+        (ROTATION, ()),
+        (STORE, (connection_id, *fake_credential())),
+        (MARK, (connection_id,)),
+        (DELETE, (connection_id,)),
+    ]
+
+
+def stored_state(connection_id: UUID) -> tuple:
+    """A connection's stored ciphertext and status, to show a refusal changed nothing."""
+    return (
+        rows(
+            "select token_type, ciphertext from growthpulse_secrets.oauth_credentials "
+            "where connection_id = %s order by token_type",
+            (connection_id,),
+        ),
+        scalar(
+            "select status from growthpulse.provider_connections where connection_id = %s",
+            (connection_id,),
+        ),
+    )
+
+
 def test_the_token_manager_reaches_only_its_contexts_organization(orgs):
     a, b = orgs["connection_a"], orgs["connection_b"]
     # Own organization: works.
@@ -840,12 +940,10 @@ def test_the_token_manager_reaches_only_its_contexts_organization(orgs):
     assert token_call("workspace", LEGACY_WORKSPACE_ID, MARK, (b,)) == [(False,)]
     with pytest.raises(pg_errors.ForeignKeyViolation, match="Unknown provider connection"):
         token_call("workspace", LEGACY_WORKSPACE_ID, STORE, (b, *fake_credential()))
-    # No context at all: nothing.
-    assert token_call(None, None, READ, (b,)) == []
-    assert token_call(None, None, ROTATION, ()) == []
-    assert token_call(None, None, DELETE, (b,)) == [(0,)]
-    with pytest.raises(pg_errors.ForeignKeyViolation):
-        token_call(None, None, STORE, (b, *fake_credential()))
+    # No context at all: every function refuses.
+    for statement, params in token_statements(b):
+        with credentials_refused():
+            token_call(None, None, statement, params)
     # Nothing above changed B's stored bytes or status.
     assert (
         scalar(
@@ -865,6 +963,110 @@ def test_a_signed_in_admin_request_can_also_scope_the_token_manager(orgs):
     found = request_rows(admin_b, READ, (orgs["connection_b"],), role=TOKEN_MANAGER)
     assert len(found) == 1
     assert request_rows(admin_b, READ, (orgs["connection_a"],), role=TOKEN_MANAGER) == []
+
+
+def fresh_connection(workspace_id: UUID) -> UUID:
+    """A new active connection with one stored credential, owned by this test alone."""
+    connection_id = add_connection(workspace_id)
+    store_fake_credential("connection", connection_id, connection_id)
+    return connection_id
+
+
+def test_viewers_and_analysts_cannot_operate_credentials(orgs):
+    connection_id = fresh_connection(WORKSPACE_B)
+    before = stored_state(connection_id)
+    for role in ("viewer", "analyst"):
+        for access in ("view", "analyse"):
+            request = sign_in(WORKSPACE_B, role, clients=[CLIENT_B.client_id], access=access)
+            for statement, params in token_statements(connection_id):
+                with credentials_refused():
+                    request_rows(request, statement, params, role=TOKEN_MANAGER)
+    assert stored_state(connection_id) == before
+
+
+def test_owners_and_admins_operate_only_their_own_organizations_credentials(orgs):
+    for role in ("owner", "admin"):
+        connection_id = fresh_connection(WORKSPACE_B)
+        request = sign_in(WORKSPACE_B, role)
+        assert len(request_rows(request, READ, (connection_id,), role=TOKEN_MANAGER)) == 1
+        assert (connection_id,) in request_rows(request, ROTATION, role=TOKEN_MANAGER)
+        before = stored_state(connection_id)
+        request_rows(request, STORE, (connection_id, *fake_credential()), role=TOKEN_MANAGER)
+        assert stored_state(connection_id) != before  # a new ciphertext
+        assert request_rows(request, MARK, (connection_id,), role=TOKEN_MANAGER) == [(True,)]
+        assert request_rows(request, DELETE, (connection_id,), role=TOKEN_MANAGER) == [(1,)]
+        assert stored_state(connection_id) == ([], "needs_reauth")
+        # The same permission in another organization: exactly like an unknown connection.
+        other = fresh_connection(LEGACY_WORKSPACE_ID)
+        before = stored_state(other)
+        assert request_rows(request, READ, (other,), role=TOKEN_MANAGER) == []
+        assert request_rows(request, MARK, (other,), role=TOKEN_MANAGER) == [(False,)]
+        assert request_rows(request, DELETE, (other,), role=TOKEN_MANAGER) == [(0,)]
+        with pytest.raises(pg_errors.ForeignKeyViolation, match="Unknown provider connection"):
+            request_rows(request, STORE, (other, *fake_credential()), role=TOKEN_MANAGER)
+        assert stored_state(other) == before
+
+
+def test_credential_jobs_must_be_organization_wide_or_for_that_connection(orgs):
+    mine, sibling = fresh_connection(WORKSPACE_B), fresh_connection(WORKSPACE_B)
+    run_id = scalar(
+        "select run_id from growthpulse.pipeline_runs where client_id = %s limit 1",
+        (CLIENT_B.client_id,),
+    )
+    before = stored_state(sibling)
+    # Client, account and run jobs are never credential jobs, even in the same organization.
+    for kind, scope_id in (
+        ("client", CLIENT_B.client_id),
+        ("ad_account", CLIENT_B.accounts[0].ad_account_id),
+        ("run", run_id),
+    ):
+        for statement, params in token_statements(sibling):
+            with credentials_refused():
+                token_call(kind, scope_id, statement, params)
+    # A connection job reaches its own connection only, and cannot list the organization.
+    for statement, params in token_statements(sibling):
+        with credentials_refused():
+            token_call("connection", mine, statement, params)
+    assert stored_state(sibling) == before
+    assert len(token_call("connection", mine, READ, (mine,))) == 1
+    token_call("connection", mine, STORE, (mine, *fake_credential()))
+    assert token_call("connection", mine, MARK, (mine,)) == [(True,)]
+
+
+def test_background_refresh_still_works_in_an_organization_job(orgs):
+    """The refresh worker's path: list, read, store the refreshed token, or mark reauth."""
+    connection_id = fresh_connection(WORKSPACE_B)
+    assert (connection_id,) in token_call("workspace", WORKSPACE_B, ROTATION, ())
+    assert len(token_call("workspace", WORKSPACE_B, READ, (connection_id,))) == 1
+    before = stored_state(connection_id)
+    token_call("workspace", WORKSPACE_B, STORE, (connection_id, *fake_credential()))
+    assert stored_state(connection_id)[1] == "active"
+    assert stored_state(connection_id) != before
+    assert token_call("workspace", WORKSPACE_B, MARK, (connection_id,)) == [(True,)]
+    assert token_call("workspace", WORKSPACE_B, MARK, (connection_id,)) == [(False,)]
+    events = rows(
+        "select action, actor_service, actor_user_id from growthpulse_auth.audit_events "
+        "where workspace_id = %s and target_id = %s order by event_id",
+        (WORKSPACE_B, str(connection_id)),
+    )
+    # Marked once, so audited once.
+    assert [e for e in events if e[0] == "connection.needs_reauth"] == [
+        ("connection.needs_reauth", "token_manager", None)
+    ]
+
+
+def test_marking_for_reauthorization_by_an_admin_is_audited_as_that_person(orgs):
+    connection_id = fresh_connection(WORKSPACE_B)
+    admin_b = sign_in(WORKSPACE_B, "admin")
+    assert request_rows(admin_b, MARK, (connection_id,), role=TOKEN_MANAGER) == [(True,)]
+    event = rows(
+        "select actor_user_id, actor_service, request_id from growthpulse_auth.audit_events "
+        "where action = 'connection.needs_reauth' and target_id = %s",
+        (str(connection_id),),
+    )
+    assert len(event) == 1
+    assert event[0][0] is not None and event[0][1] is None
+    assert event[0][2] == admin_b.request_id
 
 
 def test_token_writes_are_audited_without_secret_material(orgs):

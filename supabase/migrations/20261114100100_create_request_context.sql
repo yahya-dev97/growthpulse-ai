@@ -99,7 +99,9 @@ create function growthpulse_auth.set_context(
     p_client_id uuid,
     p_member_role text,
     p_membership_id uuid,
-    p_ref_id uuid
+    p_ref_id uuid,
+    p_scope_kind text,
+    p_scope_id uuid
 )
 returns void
 language plpgsql
@@ -110,6 +112,9 @@ as $$
 declare
     v_context text;
 begin
+    -- A guard against accidental double scoping in application code, not a security
+    -- boundary: any role can clear both settings and then begin a second context. That
+    -- gains nothing, because each context still needs its own valid session or grant.
     if pg_catalog.current_setting('growthpulse.context', true) is not null
         and pg_catalog.current_setting('growthpulse.context', true) <> '' then
         raise exception 'This transaction already has a context; one per transaction'
@@ -118,7 +123,8 @@ begin
     v_context := pg_catalog.concat_ws(';',
         'v1', p_kind, coalesce(p_user_id::text, ''), p_workspace_id::text,
         coalesce(p_client_id::text, ''), coalesce(p_member_role, ''),
-        coalesce(p_membership_id::text, ''), coalesce(p_ref_id::text, '')
+        coalesce(p_membership_id::text, ''), coalesce(p_ref_id::text, ''),
+        coalesce(p_scope_kind, ''), coalesce(p_scope_id::text, '')
     );
     if growthpulse_auth.context_mac(v_context) is null then
         raise exception 'The context key is missing' using errcode = 'insufficient_privilege';
@@ -141,7 +147,9 @@ returns table (
     client_id uuid,
     member_role text,
     membership_id uuid,
-    ref_id uuid
+    ref_id uuid,
+    scope_kind text,
+    scope_id uuid
 )
 language plpgsql
 stable
@@ -163,7 +171,7 @@ begin
             using errcode = 'insufficient_privilege';
     end if;
     v_parts := pg_catalog.string_to_array(v_context, ';');
-    if pg_catalog.array_length(v_parts, 1) <> 8 or v_parts[1] <> 'v1' then
+    if pg_catalog.array_length(v_parts, 1) <> 10 or v_parts[1] <> 'v1' then
         raise exception 'The request context is not valid for this transaction'
             using errcode = 'insufficient_privilege';
     end if;
@@ -174,6 +182,8 @@ begin
     member_role := nullif(v_parts[6], '');
     membership_id := nullif(v_parts[7], '')::uuid;
     ref_id := nullif(v_parts[8], '')::uuid;
+    scope_kind := nullif(v_parts[9], '');
+    scope_id := nullif(v_parts[10], '')::uuid;
     return next;
 end;
 $$;
@@ -246,7 +256,8 @@ begin
             using errcode = 'insufficient_privilege';
     end if;
     perform growthpulse_auth.set_context(
-        'request', v_user_id, p_workspace_id, null, v_role, v_membership_id, p_request_id
+        'request', v_user_id, p_workspace_id, null, v_role, v_membership_id, p_request_id,
+        null, null
     );
 end;
 $$;
@@ -297,7 +308,8 @@ begin
             using errcode = 'insufficient_privilege';
     end if;
     perform growthpulse_auth.set_context(
-        'job', null, v_workspace_id, v_client_id, null, null, p_job_id
+        'job', null, v_workspace_id, v_client_id, null, null, p_job_id,
+        p_scope_kind, p_scope_id
     );
 end;
 $$;
@@ -409,6 +421,16 @@ $$;
 
 -- Sessions. The application generates 32 random bytes, sends them to the browser in a
 -- secure cookie, and passes only their SHA-256 here.
+--
+-- UNVERIFIED. The database does not check who the caller signed in as: it trusts the
+-- authenticator role to have verified the Supabase login token, which nothing does until
+-- M7b. Anyone holding that role's credential can create a session for any active user.
+-- So: EXECUTE is granted only to growthpulse_authenticator (NOLOGIN), the growthpulse_auth
+-- schema must never be exposed through the Supabase Data API, and no application code may
+-- call these functions until the M7b sign-in service verifies the login token first.
+-- Every call is audited (no token or hash is recorded) as 'session.create_unverified' and
+-- 'session.revoke', against the user, with no organization: a session is not one
+-- organization's, and the organization audit view shows only organization events.
 create function growthpulse_auth.create_session(
     p_user_id uuid, p_token_hash bytea, p_expires_at timestamptz
 )
@@ -430,6 +452,11 @@ begin
     insert into growthpulse_auth.sessions (user_id, token_hash, expires_at)
     values (p_user_id, p_token_hash, p_expires_at)
     returning session_id into v_session_id;
+    insert into growthpulse_auth.audit_events (
+        workspace_id, actor_service, action, target_type, target_id
+    ) values (
+        null, 'authenticator', 'session.create_unverified', 'user', p_user_id::text
+    );
     return v_session_id;
 end;
 $$;
@@ -441,13 +468,28 @@ volatile
 security definer
 set search_path = ''
 as $$
+declare
+    v_user_id uuid;
 begin
     update growthpulse_auth.sessions as s
     set revoked_at = pg_catalog.now()
-    where s.token_hash = p_token_hash and s.revoked_at is null;
-    return found;
+    where s.token_hash = p_token_hash and s.revoked_at is null
+    returning s.user_id into v_user_id;
+    if v_user_id is null then
+        return false;
+    end if;
+    insert into growthpulse_auth.audit_events (
+        workspace_id, actor_service, action, target_type, target_id
+    ) values (
+        null, 'authenticator', 'session.revoke', 'user', v_user_id::text
+    );
+    return true;
 end;
 $$;
+
+comment on function growthpulse_auth.create_session(uuid, bytea, timestamptz) is
+    'UNVERIFIED: trusts the caller to have verified the Supabase sign-in. Authenticator only; '
+    'never expose through the Data API. Audited as session.create_unverified.';
 
 
 -- The dispatcher's cross-organization question: which accounts are due? Returns account
